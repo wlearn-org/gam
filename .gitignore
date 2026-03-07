@@ -1,0 +1,13 @@
+build/
+wasm/
+node_modules/
+__pycache__/
+*.pyc
+*.o
+*.so
+*.dylib
+test_c
+.pytest_cache/
+PLAN.md
+CLAUDE.md
+.claude/

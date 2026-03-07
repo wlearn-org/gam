@@ -1,0 +1,53 @@
+{
+  "name": "@wlearn/gam",
+  "version": "0.1.0",
+  "description": "GLM/GAM from scratch in C11 -- elastic net, lasso, ridge, MCP, SCAD, SLOPE, group lasso, fused lasso, Cox PH, multinomial, Huber, quantile, B-spline/tensor smooths, pathwise coordinate descent",
+  "type": "module",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "files": [
+    "src/",
+    "wasm/",
+    "LICENSE",
+    "README.md",
+    "CHANGELOG.md"
+  ],
+  "sideEffects": false,
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "test": "node test/test.js",
+    "build": "bash scripts/build-wasm.sh",
+    "verify": "bash scripts/verify-exports.sh"
+  },
+  "dependencies": {
+    "@wlearn/types": "0.1.0",
+    "@wlearn/core": "0.1.0"
+  },
+  "keywords": [
+    "glm",
+    "gam",
+    "elastic-net",
+    "lasso",
+    "ridge",
+    "mcp",
+    "scad",
+    "slope",
+    "group-lasso",
+    "cox",
+    "multinomial",
+    "logistic-regression",
+    "poisson-regression",
+    "coordinate-descent",
+    "regularization-path",
+    "machine-learning",
+    "wasm",
+    "webassembly",
+    "wlearn"
+  ],
+  "author": "Anton Zemlyansky",
+  "license": "Apache-2.0"
+}
