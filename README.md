@@ -425,7 +425,7 @@ make
 Requires Emscripten.
 
 ```bash
-bash scripts/build-wasm.sh    # outputs wasm/gam.cjs
+bash scripts/build-wasm.sh    # outputs wasm/gam.js
 bash scripts/verify-exports.sh # verifies 34 exports
 ```
 

@@ -63,7 +63,7 @@ emcc \
   "${PROJECT_DIR}/csrc/gam.c" \
   "${PROJECT_DIR}/csrc/wl_api.c" \
   -I "${PROJECT_DIR}/csrc" \
-  -o "${OUTPUT_DIR}/gam.cjs" \
+  -o "${OUTPUT_DIR}/gam.js" \
   -std=c11 \
   -s MODULARIZE=1 \
   -s SINGLE_FILE=1 \
@@ -88,5 +88,5 @@ wasm_embedded: true
 EOF
 
 echo "=== Build complete ==="
-ls -lh "${OUTPUT_DIR}/gam.cjs"
+ls -lh "${OUTPUT_DIR}/gam.js"
 cat "${OUTPUT_DIR}/BUILD_INFO"

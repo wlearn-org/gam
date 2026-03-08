@@ -8,7 +8,7 @@ async function loadGAM(options = {}) {
   if (loading) return loading
 
   loading = (async () => {
-    const createGAM = require('../wasm/gam.cjs')
+    const createGAM = require('../wasm/gam.js')
     wasmModule = await createGAM(options)
     return wasmModule
   })()
