@@ -1,10 +1,10 @@
-import { getWasm, loadGAM } from './wasm.js'
-import {
+const { getWasm, loadGAM } = require('./wasm.js')
+const {
   normalizeX, normalizeY,
   encodeBundle, decodeBundle,
   register,
   DisposedError, NotFittedError
-} from '@wlearn/core'
+} = require('@wlearn/core')
 
 // Constants matching gam.h
 const FAMILY = {
@@ -56,7 +56,7 @@ const leakRegistry = typeof FinalizationRegistry !== 'undefined'
 
 const LOAD_SENTINEL = Symbol('load')
 
-export class GAMModel {
+class GAMModel {
   #handle = null
   #freed = false
   #ptrRef = null
@@ -861,3 +861,5 @@ export class GAMModel {
 
 register('wlearn.gam.classifier@1', (m, t, b) => GAMModel._fromBundle(m, t, b))
 register('wlearn.gam.regressor@1', (m, t, b) => GAMModel._fromBundle(m, t, b))
+
+module.exports = { GAMModel }

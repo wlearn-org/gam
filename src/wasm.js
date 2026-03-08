@@ -1,16 +1,13 @@
 // WASM loader -- loads the GAM WASM module (singleton, lazy init)
 
-import { createRequire } from 'module'
-
 let wasmModule = null
 let loading = null
 
-export async function loadGAM(options = {}) {
+async function loadGAM(options = {}) {
   if (wasmModule) return wasmModule
   if (loading) return loading
 
   loading = (async () => {
-    const require = createRequire(import.meta.url)
     const createGAM = require('../wasm/gam.cjs')
     wasmModule = await createGAM(options)
     return wasmModule
@@ -19,7 +16,9 @@ export async function loadGAM(options = {}) {
   return loading
 }
 
-export function getWasm() {
+function getWasm() {
   if (!wasmModule) throw new Error('WASM not loaded -- call loadGAM() first')
   return wasmModule
 }
+
+module.exports = { loadGAM, getWasm }

@@ -1,9 +1,3 @@
-import { fileURLToPath } from 'url'
-import { dirname } from 'path'
-
-const __filename = fileURLToPath(import.meta.url)
-const __dirname = dirname(__filename)
-
 let passed = 0
 let failed = 0
 
@@ -84,12 +78,14 @@ function makePoissonData(rng, nSamples, nFeatures) {
   return { X, y }
 }
 
+async function main() {
+
 // ============================================================
 // WASM loading
 // ============================================================
 console.log('\n=== WASM Loading ===')
 
-const { loadGAM } = await import('../src/wasm.js')
+const { loadGAM } = require('../src/wasm.js')
 const wasm = await loadGAM()
 
 await test('WASM module loads', async () => {
@@ -107,7 +103,7 @@ await test('get_last_error returns string', async () => {
 // ============================================================
 console.log('\n=== GAMModel ===')
 
-const { GAMModel } = await import('../src/model.js')
+const { GAMModel } = require('../src/model.js')
 
 await test('create() returns model', async () => {
   const model = await GAMModel.create()
@@ -1320,4 +1316,8 @@ await test('gamlss save + load roundtrip', async () => {
 // Summary
 // ============================================================
 console.log(`\n=== Results: ${passed} passed, ${failed} failed ===`)
-process.exit(failed > 0 ? 1 : 0)
+if (failed > 0) process.exit(1)
+
+}
+
+main()

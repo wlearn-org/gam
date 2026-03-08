@@ -2,10 +2,10 @@
   "name": "@wlearn/gam",
   "version": "0.1.0",
   "description": "GLM/GAM from scratch in C11 -- elastic net, lasso, ridge, MCP, SCAD, SLOPE, group lasso, fused lasso, Cox PH, multinomial, Huber, quantile, B-spline/tensor smooths, pathwise coordinate descent",
-  "type": "module",
+  "type": "commonjs",
   "main": "src/index.js",
   "exports": {
-    ".": "./src/index.js"
+    ".": { "require": "./src/index.js", "default": "./src/index.js" }
   },
   "files": [
     "src/",

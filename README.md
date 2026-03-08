@@ -88,7 +88,7 @@ make
 ### JavaScript
 
 ```js
-import { GAMModel } from '@wlearn/gam'
+const { GAMModel } = require('@wlearn/gam')
 
 // Linear regression with elastic net
 const model = await GAMModel.create({
