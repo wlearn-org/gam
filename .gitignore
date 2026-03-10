@@ -1,5 +1,6 @@
 build/
 wasm/
+dist/
 node_modules/
 __pycache__/
 *.pyc
@@ -11,3 +12,4 @@ test_c
 PLAN.md
 CLAUDE.md
 .claude/
+package-lock.json
