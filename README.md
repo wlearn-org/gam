@@ -2,7 +2,7 @@
 
 Generalized linear models (GLM), generalized additive models (GAM), and penalized regression, written in C11 from scratch. No upstream dependencies.
 
-Runs as native C, WASM (browser + Node), with JS and Python wrappers.
+Part of [wlearn](https://wlearn.org) ([GitHub](https://github.com/wlearn-org), [all packages](https://github.com/wlearn-org/wlearn#repository-structure)). Runs as native C, WASM (browser + Node), with JS and Python wrappers.
 
 ## Features
 
