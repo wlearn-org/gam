@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.0 (2026-03-10)
+
+- Wrap GAMModel with `createModelClass` for unified task detection
+- `task` parameter (`'classification'` or `'regression'`) is now auto-detected from labels if omitted
+
 ## 0.1.0 (2026-03-07)
 
 Initial release.
