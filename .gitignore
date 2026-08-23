@@ -2,6 +2,10 @@ build/
 wasm/
 dist/
 node_modules/
+js/csrc/
+py/csrc/
+py/build/
+py/*.egg-info/
 __pycache__/
 *.pyc
 *.o

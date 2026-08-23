@@ -1,5 +1,6 @@
 let passed = 0
 let failed = 0
+const { decodeBundle } = require('@wlearn/core')
 
 async function test(name, fn) {
   try {
@@ -85,7 +86,7 @@ async function main() {
 // ============================================================
 console.log('\n=== WASM Loading ===')
 
-const { loadGAM } = require('../src/wasm.js')
+const { loadGAM } = require('../js/src/wasm.js')
 const wasm = await loadGAM()
 
 await test('WASM module loads', async () => {
@@ -103,7 +104,7 @@ await test('get_last_error returns string', async () => {
 // ============================================================
 console.log('\n=== GAMModel ===')
 
-const { GAMModel } = require('../src/model.js')
+const { GAMModel } = require('../js/src/model.js')
 
 await test('create() returns model', async () => {
   const model = await GAMModel.create()
@@ -757,6 +758,60 @@ await test('save + load preserves params', async () => {
 
   model.dispose()
   loaded.dispose()
+})
+
+await test('auto-inferred family follows classification/regression task changes', async () => {
+  const X = [[-2, -1], [-1, -2], [1, 2], [2, 1], [0.5, 1.5], [-1.5, -0.5]]
+  const classificationY = [0, 0, 1, 1, 1, 0]
+  const regressionY = [-3, -2, 2, 3, 1.5, -1.5]
+  const cases = [
+    ['classification', classificationY, 'regression', regressionY,
+      'gaussian', 'wlearn.gam.regressor@1'],
+    ['regression', regressionY, 'classification', classificationY,
+      'binomial', 'wlearn.gam.classifier@1']
+  ]
+
+  for (const [firstTask, firstY, nextTask, nextY, expectedFamily, expectedTypeId] of cases) {
+    const model = await GAMModel.create({ task: firstTask, nLambda: 3, maxIter: 50 })
+    model.fit(X, firstY)
+    model.setParams({ task: nextTask })
+    model.fit(X, nextY)
+
+    assert(model.getParams().family === expectedFamily,
+      `${firstTask} -> ${nextTask} kept ${model.getParams().family}`)
+    assert(model.capabilities.regressor === (nextTask === 'regression'),
+      `capabilities do not match ${nextTask}`)
+    const predictions = model.predict(X)
+    const bytes = model.save()
+    assert(decodeBundle(bytes).manifest.typeId === expectedTypeId,
+      `bundle type does not match ${nextTask}`)
+
+    const loaded = await GAMModel.load(bytes)
+    const loadedPredictions = loaded.predict(X)
+    for (let i = 0; i < predictions.length; i++) {
+      assertClose(predictions[i], loadedPredictions[i], 1e-10,
+        `save/load prediction mismatch at ${i}`)
+    }
+    loaded.dispose()
+    model.dispose()
+  }
+
+  const explicit = await GAMModel.create({ task: 'classification', family: 'gaussian', nLambda: 3 })
+  explicit.fit(X, regressionY)
+  assert(explicit.capabilities.regressor, 'explicit family must take precedence over task')
+  explicit.dispose()
+
+  const { GAMModel: PublicGAMModel } = require('../js/src/index.js')
+  const publicModel = await PublicGAMModel.create({ nLambda: 3, maxIter: 50 })
+  publicModel.fit(X, classificationY)
+  assert(publicModel.task === 'classification', 'public model should detect classification')
+  publicModel.setParams({ task: 'regression' }).fit(X, regressionY)
+  assert(publicModel.task === 'regression' && publicModel.capabilities.regressor,
+    'public model should switch to regression')
+  publicModel.setParams({ task: 'classification' }).fit(X, classificationY)
+  assert(publicModel.task === 'classification' && publicModel.capabilities.classifier,
+    'public model should switch back to classification')
+  publicModel.dispose()
 })
 
 // ============================================================

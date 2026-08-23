@@ -64,6 +64,7 @@ class GAMModel {
   #fitted = false
   #nFeatures = 0
   #nFits = 0
+  #familyInferred = false
 
   constructor(handle, params, extra) {
     if (handle === LOAD_SENTINEL) {
@@ -91,6 +92,17 @@ class GAMModel {
   fit(X, y) {
     this.#ensureFitted(false)
     const wasm = getWasm()
+
+    if (this.#params.family == null && this.#params.task != null) {
+      if (this.#params.task === 'classification') {
+        this.#params.family = 'binomial'
+      } else if (this.#params.task === 'regression') {
+        this.#params.family = 'gaussian'
+      } else {
+        throw new Error(`Unknown task: '${this.#params.task}'. Use 'classification' or 'regression'.`)
+      }
+      this.#familyInferred = true
+    }
 
     if (this.#handle) {
       wasm._wl_gam_free(this.#handle)
@@ -353,6 +365,7 @@ class GAMModel {
     this.#nFeatures = cols
     this.#nFits = wasm._wl_gam_get_n_fits(modelPtr)
     this.#params.family = 'multinomial'
+    this.#familyInferred = false
 
     this.#registerLeak()
     return this
@@ -411,6 +424,7 @@ class GAMModel {
     this.#nFeatures = cols
     this.#nFits = wasm._wl_gam_get_n_fits(modelPtr)
     this.#params.family = 'gamlss'
+    this.#familyInferred = false
 
     this.#registerLeak()
     return this
@@ -768,6 +782,12 @@ class GAMModel {
   }
 
   setParams(p) {
+    if (Object.prototype.hasOwnProperty.call(p, 'family')) {
+      this.#familyInferred = false
+    } else if (Object.prototype.hasOwnProperty.call(p, 'task') && this.#familyInferred) {
+      delete this.#params.family
+      this.#familyInferred = false
+    }
     Object.assign(this.#params, p)
     return this
   }

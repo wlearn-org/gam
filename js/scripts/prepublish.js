@@ -33,6 +33,13 @@ function atLeast(version, major, minor) {
 
 function findEmscriptenPython() {
   if (process.env.EMSDK_PYTHON) return process.env.EMSDK_PYTHON
+  const envPython = process.env.WLEARN_PYTHON || process.env.PYTHON
+  if (envPython) {
+    const version = versionFor(envPython, ['--version'], /Python\s+(\d+)\.(\d+)(?:\.(\d+))?/)
+    if (atLeast(version, 3, 10)) return envPython
+    console.error('prepublish: WLEARN_PYTHON/PYTHON must point to Python >= 3.10 for Emscripten.')
+    process.exit(1)
+  }
 
   const candidates = ['/usr/bin/python3', '/opt/homebrew/bin/python3', '/usr/local/bin/python3', 'python3', 'python']
   for (const exe of candidates) {
@@ -41,7 +48,7 @@ function findEmscriptenPython() {
     if (atLeast(version, 3, 10)) return exe
   }
 
-  console.error('prepublish: Emscripten requires Python >= 3.10. Set EMSDK_PYTHON to a compatible Python.')
+  console.error('prepublish: Emscripten requires Python >= 3.10. Set EMSDK_PYTHON or WLEARN_PYTHON to a compatible Python.')
   process.exit(1)
 }
 

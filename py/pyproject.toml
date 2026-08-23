@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "wlearn-gam"
+version = "0.2.0"
+description = "GLM/GAM native bindings backed by the wlearn C11 core"
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+requires-python = ">=3.10"
+dependencies = ["numpy>=1.22", "wlearn>=0.2.0"]
+keywords = ["glm", "gam", "regularization", "machine-learning", "wlearn"]
+
+[project.urls]
+Homepage = "https://wlearn.org"
+Repository = "https://github.com/wlearn-org/gam"
+Issues = "https://github.com/wlearn-org/gam/issues"
+
+[tool.setuptools.packages.find]
+include = ["wlearn_gam*"]
+
+[tool.setuptools.package-data]
+wlearn_gam = ["_native.c"]

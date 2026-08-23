@@ -4,13 +4,12 @@ Generalized linear models (GLM), generalized additive models (GAM), and penalize
 
 Part of [wlearn](https://wlearn.org) ([GitHub](https://github.com/wlearn-org), [all packages](https://github.com/wlearn-org/wlearn#repository-structure)). Runs as native C, WASM (browser + Node), with JS and Python wrappers.
 
-## Repository Layout
+## Package Layout
 
-- `src/` is the canonical C11 source.
-- `js/` is the npm package for `@wlearn/gam`; its `csrc/` directory is generated from root `src/`.
-- `py/` is the Python package for `wlearn-gam`; its `csrc/` directory is generated from root `src/`.
-- Set `WLEARN_PYTHON=/path/to/python` to run Python sync/build/test targets with a specific environment.
-- Default Python tests use package fixtures. External sklearn/scipy/statsmodels parity lives behind `make test-py-ref`.
+- `src/` is the JavaScript wrapper.
+- `csrc/` is generated from repository root `src/` before build/pack.
+- `wasm/` and `dist/` are generated package artifacts.
+- `WLEARN_PYTHON` is honored by package lifecycle scripts when Emscripten needs Python.
 
 ## Features
 
@@ -79,13 +78,13 @@ npm install @wlearn/gam
 
 ```bash
 # Build the C library
-mkdir build && cd build && cmake .. && make
+mkdir -p ../build && cd ../build && cmake .. && make
 ```
 
 ### C
 
 ```bash
-mkdir build && cd build
+mkdir -p ../build && cd ../build
 cmake .. -DBUILD_TESTING=ON
 make
 ./test_gam  # run tests
@@ -205,7 +204,7 @@ for (let i = 0; i < n; i++) {
 }
 ```
 
-### Python
+### Python (via ctypes)
 
 ```python
 import numpy as np
@@ -400,7 +399,7 @@ const char *gam_get_error(void);
 ### Native (C)
 
 ```bash
-mkdir build && cd build
+mkdir -p ../build && cd ../build
 cmake .. -DBUILD_TESTING=ON
 make
 ./test_gam
@@ -411,7 +410,6 @@ make
 Requires Emscripten.
 
 ```bash
-cd js
 bash scripts/build-wasm.sh    # outputs wasm/gam.js
 bash scripts/verify-exports.sh # verifies 34 exports
 ```
@@ -419,12 +417,13 @@ bash scripts/verify-exports.sh # verifies 34 exports
 ### JS Tests
 
 ```bash
-cd js && npm test
+npm test
 ```
 
 ### Python Tests
 
 ```bash
+cd ..
 make test-py       # package fixture tests, no external ML dependencies
 make test-py-ref   # optional sklearn/scipy/statsmodels parity tests
 ```

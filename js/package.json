@@ -1,6 +1,6 @@
 {
   "name": "@wlearn/gam",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "GLM/GAM from scratch in C11 -- elastic net, lasso, ridge, MCP, SCAD, SLOPE, group lasso, fused lasso, Cox PH, multinomial, Huber, quantile, B-spline/tensor smooths, pathwise coordinate descent",
   "type": "commonjs",
   "main": "src/index.js",
@@ -12,27 +12,28 @@
   },
   "files": [
     "src/",
+    "csrc/",
     "wasm/",
     "dist/",
     "LICENSE",
     "NOTICE",
-    "README.md",
-    "CHANGELOG.md"
+    "README.md"
   ],
   "sideEffects": false,
   "publishConfig": {
     "access": "public"
   },
   "scripts": {
-    "test": "node test/test.js",
-    "build": "bash scripts/build-wasm.sh",
+    "test": "node ../test/test.js",
+    "build": "node scripts/sync-csrc.js && bash scripts/build-wasm.sh",
     "verify": "bash scripts/verify-exports.sh",
     "build:browser": "bash scripts/build-browser.sh",
+    "test:browser": "npm run build:browser && node ../test/test-browser.js",
     "prepack": "node scripts/prepack.js",
     "prepublishOnly": "node scripts/prepublish.js"
   },
   "dependencies": {
-    "@wlearn/core": "0.2.0"
+    "@wlearn/core": "^0.3.0"
   },
   "keywords": [
     "glm",
@@ -58,12 +59,19 @@
   "author": "Anton Zemlyansky",
   "repository": {
     "type": "git",
-    "url": "https://github.com/wlearn-org/gam.git"
+    "url": "https://github.com/wlearn-org/gam.git",
+    "directory": "js"
   },
   "license": "Apache-2.0",
   "devDependencies": {
     "esbuild": "^0.27.3",
     "playwright": "^1.58.2"
+  },
+  "browser": {
+    "node:fs": "./src/empty.js",
+    "node:path": "./src/empty.js",
+    "node:crypto": "./src/empty.js",
+    "ws": "./src/empty.js"
   },
   "bugs": {
     "url": "https://github.com/wlearn-org/gam/issues"

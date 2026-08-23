@@ -26,9 +26,16 @@ const buildEnv = {
   EM_CACHE: process.env.EM_CACHE || path.join(pkgDir, 'build', '.emcache')
 }
 
-if (!process.env.EMSDK_PYTHON && fs.existsSync('/usr/bin/python3')) {
-  buildEnv.EMSDK_PYTHON = '/usr/bin/python3'
+if (!process.env.EMSDK_PYTHON) {
+  const envPython = process.env.WLEARN_PYTHON || process.env.PYTHON
+  if (envPython) {
+    buildEnv.EMSDK_PYTHON = envPython
+  } else if (fs.existsSync('/usr/bin/python3')) {
+    buildEnv.EMSDK_PYTHON = '/usr/bin/python3'
+  }
 }
+
+run(process.execPath, [path.join(__dirname, 'sync-csrc.js')], buildEnv)
 
 const wantsWasm = files.includes('wasm/')
 const wantsDist = files.includes('dist/')
