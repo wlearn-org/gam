@@ -58,6 +58,22 @@ function chromiumExecutablePath() {
   return undefined
 }
 
+async function exerciseRelaxed(GAMModel) {
+  const X = Array.from({ length: 80 }, (_, i) => [(i - 39.5) / 10])
+  const y = X.map(row => 1.25 + 3 * row[0])
+  const model = await GAMModel.create({ relax: 1, nLambda: 3, lambdaMinRatio: 0.3 })
+  let loaded
+  try {
+    model.fit(X, y)
+    loaded = await GAMModel.load(model.save())
+    if (!loaded.hasRelaxed) throw new Error('relaxed state lost')
+    const actual = loaded.predictRelaxed(X, 2)
+    if (actual.some((value, i) => !Number.isFinite(value) || Math.abs(value - y[i]) > 1e-5)) {
+      throw new Error('relaxed predictions differ from analytic reference')
+    }
+  } finally { loaded?.dispose(); model.dispose() }
+}
+
 function makeIifeHtml(jsPath, globalName, exportKeys) {
   return `<!DOCTYPE html><html><body>
 <script src="${jsPath}"></script>
@@ -68,6 +84,7 @@ async function runTest() {
     var expected = ${JSON.stringify(exportKeys)}
     var missing = expected.filter(function(k) { return !(k in lib) })
     if (missing.length) return { ok: false, error: 'missing exports: ' + missing.join(', ') }
+    await (${exerciseRelaxed.toString()})(lib.GAMModel)
     var types = {}
     expected.forEach(function(k) { types[k] = typeof lib[k] })
     return { ok: true, exports: expected.length, types: types }
@@ -84,6 +101,7 @@ function makeEsmHtml(jsPath, exportKeys) {
 import { ${imports} } from '${jsPath}'
 async function runTest() {
   try {
+    await (${exerciseRelaxed.toString()})(GAMModel)
     var types = {}
     var exports = [${exportKeys.map(k => `['${k}', ${k}]`).join(', ')}]
     exports.forEach(function(e) { types[e[0]] = typeof e[1] })

@@ -20,6 +20,9 @@ EXPECTED_EXPORTS=(
   wl_gam_fit_groups
   wl_gam_fit_cox
   wl_gam_fit_multi
+  wl_gam_has_relaxed
+  wl_gam_predict_relaxed
+  wl_gam_get_relaxed_coef
   wl_gam_predict_multi
   wl_gam_get_n_tasks
   wl_gam_fit_multinomial

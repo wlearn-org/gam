@@ -284,6 +284,19 @@ int wl_gam_get_n_fits(const gam_path_t *path) {
     return path ? path->n_fits : 0;
 }
 
+int wl_gam_has_relaxed(const gam_path_t *path) {
+    return gam_has_relaxed(path);
+}
+
+int wl_gam_predict_relaxed(const gam_path_t *path, int fit_idx,
+                          const double *X, int nrow, int ncol, double *out) {
+    return gam_predict_relaxed(path, fit_idx, X, nrow, ncol, out);
+}
+
+double wl_gam_get_relaxed_coef(const gam_path_t *path, int fit_idx, int coef_idx) {
+    return gam_get_relaxed_coef(path, fit_idx, coef_idx);
+}
+
 int wl_gam_get_n_features(const gam_path_t *path) {
     return path ? path->n_features : 0;
 }

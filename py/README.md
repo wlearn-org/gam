@@ -57,3 +57,16 @@ The canonical native source is repository root `src/`; `py/csrc/` is generated
 for Python builds. `make test-py` uses fixtures and has no sklearn/scipy/
 statsmodels dependency. Use `make test-py-ref` for optional external parity
 tests.
+
+## Relaxed paths
+
+Set `relax: 1` in the params dictionary to refit each active set without a penalty.
+Ordinary `predict()` and `get_coefs()` keep their penalized-path behavior. Use
+`has_relaxed`, `predict_relaxed(X, fit_idx=None)`, and
+`get_relaxed_coefs(fit_idx=None)` for the relaxed path. Both accessors default to
+the selected CV fit (or the last fit when CV is absent). Missing relaxed state
+raises an error. Grouped fitting rejects `relax` because that ABI does not carry it.
+
+Ordinary models keep GAM1 / `wlearn.gam.{classifier,regressor}@1` artifacts.
+Relaxed models use GAM2 / `@2` and persist both paths, including coefficients and
+diagnostics. Current loaders accept both formats; older loaders cannot load `@2`.

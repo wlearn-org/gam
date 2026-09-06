@@ -64,7 +64,7 @@ Part of [wlearn](https://wlearn.org) ([GitHub](https://github.com/wlearn-org), [
 ### Other
 
 - Deterministic (seed-controlled)
-- Binary serialization (WLRN bundle with GAM1 native artifact)
+- Binary serialization (WLRN bundle with GAM1 ordinary or GAM2 relaxed artifact)
 - C, JS, Python, and external parity test suites
 
 ## Installation
@@ -338,6 +338,27 @@ model.getParams()
 model.setParams({ alpha: 0.5 })
 model.capabilities                   // { classifier, regressor, predictProba, ... }
 ```
+
+#### Relaxed paths
+
+Set `relax: 1` for an unpenalized refit of each ordinary path's active set.
+`predict()` and `getCoefs()` keep returning the penalized result. Use
+`hasRelaxed`, `predictRelaxed(X, fitIdx?)`, and `getRelaxedCoefs(fitIdx?)`
+to access the refit explicitly. Python exposes `has_relaxed`,
+`predict_relaxed(X, fit_idx=None)`, and `get_relaxed_coefs(fit_idx=None)`;
+C exposes `gam_has_relaxed`, `gam_predict_relaxed`, and `gam_get_relaxed_coef`.
+Missing relaxed state raises an error in JS/Python. As with ordinary accessors,
+prediction defaults to the selected CV fit. JS coefficient inspection defaults
+to the last fit; Python uses the selected CV fit. Pass an index when comparing
+the two paths.
+
+Ordinary models retain GAM1 / `wlearn.gam.{classifier,regressor}@1` persistence.
+Relaxed models use GAM2 / `@2`, storing both paths, coefficients, and diagnostics.
+Current loaders accept both versions; older loaders cannot load relaxed bundles.
+The relaxed refit retains sample weights, offsets, family/link, and solver
+controls. JS/Python grouped training and JS specialized Cox, multi-task,
+multinomial, and GAMLSS entrypoints reject `relax` because their ABI does not
+carry it.
 
 #### C API
 

@@ -65,6 +65,7 @@ class GAMModel {
   #nFeatures = 0
   #nFits = 0
   #familyInferred = false
+  #artifactMediaType = null
 
   constructor(handle, params, extra) {
     if (handle === LOAD_SENTINEL) {
@@ -72,6 +73,7 @@ class GAMModel {
       this.#params = extra.params || {}
       this.#nFeatures = extra.nFeatures || 0
       this.#nFits = extra.nFits || 0
+      this.#artifactMediaType = extra.artifactMediaType || null
       this.#fitted = true
     } else {
       this.#handle = null
@@ -91,6 +93,7 @@ class GAMModel {
 
   fit(X, y) {
     this.#ensureFitted(false)
+    if (this.#params.relax && this.#params.groups) throw new Error('relax is not supported by the group fitting ABI')
     const wasm = getWasm()
 
     if (this.#params.family == null && this.#params.task != null) {
@@ -189,6 +192,7 @@ class GAMModel {
     }
 
     this.#handle = modelPtr
+    this.#artifactMediaType = null
     this.#fitted = true
     this.#nFeatures = cols
     this.#nFits = wasm._wl_gam_get_n_fits(modelPtr)
@@ -198,6 +202,7 @@ class GAMModel {
   }
 
   fitCox(X, time, status) {
+    if (this.#params.relax) throw new Error('relax is not supported by this fitting method')
     this.#ensureFitted(false)
     const wasm = getWasm()
 
@@ -258,6 +263,7 @@ class GAMModel {
   }
 
   fitMulti(X, Y, nTasks) {
+    if (this.#params.relax) throw new Error('relax is not supported by this fitting method')
     this.#ensureFitted(false)
     const wasm = getWasm()
 
@@ -313,6 +319,7 @@ class GAMModel {
   }
 
   fitMultinomial(X, y, nClasses) {
+    if (this.#params.relax) throw new Error('relax is not supported by this fitting method')
     this.#ensureFitted(false)
     const wasm = getWasm()
 
@@ -372,6 +379,7 @@ class GAMModel {
   }
 
   fitGamlss(X, y, distribution = 'normal') {
+    if (this.#params.relax) throw new Error('relax is not supported by this fitting method')
     this.#ensureFitted(false)
     const wasm = getWasm()
 
@@ -526,6 +534,18 @@ class GAMModel {
   }
 
   predict(X, fitIdx) {
+    return this.#predictResponse(X, fitIdx, false)
+  }
+
+  predictRelaxed(X, fitIdx) {
+    return this.#predictResponse(X, fitIdx, true)
+  }
+
+  get hasRelaxed() {
+    return !!(this.#handle && !this.#freed && getWasm()._wl_gam_has_relaxed(this.#handle))
+  }
+
+  #predictResponse(X, fitIdx, relaxed) {
     this.#ensureFitted()
     const idx = this.#resolveFitIdx(fitIdx)
     const wasm = getWasm()
@@ -535,7 +555,8 @@ class GAMModel {
     wasm.HEAPF64.set(xData, xPtr / 8)
     const outPtr = wasm._malloc(rows * 8)
 
-    const ret = wasm._wl_gam_predict(this.#handle, idx, xPtr, rows, cols, outPtr)
+    const predict = relaxed ? wasm._wl_gam_predict_relaxed : wasm._wl_gam_predict
+    const ret = predict(this.#handle, idx, xPtr, rows, cols, outPtr)
 
     wasm._free(xPtr)
 
@@ -695,13 +716,24 @@ class GAMModel {
   }
 
   getCoefs(fitIdx) {
+    return this.#getCoefs(fitIdx, false)
+  }
+
+  getRelaxedCoefs(fitIdx) {
+    return this.#getCoefs(fitIdx, true)
+  }
+
+  #getCoefs(fitIdx, relaxed) {
     this.#ensureFitted()
     const idx = fitIdx ?? (this.#nFits - 1)
     const wasm = getWasm()
-    const nCoefs = this.#nFeatures + 1
+    if (relaxed && !this.hasRelaxed) throw new Error('Model has no relaxed fit')
+    if (!Number.isInteger(idx) || idx < 0 || idx >= this.#nFits) throw new Error('Invalid fit index')
+    const nCoefs = wasm._wl_gam_get_n_coefs(this.#handle)
+    const getCoef = relaxed ? wasm._wl_gam_get_relaxed_coef : wasm._wl_gam_get_coef
     const result = new Float64Array(nCoefs)
     for (let j = 0; j < nCoefs; j++) {
-      result[j] = wasm._wl_gam_get_coef(this.#handle, idx, j)
+      result[j] = getCoef(this.#handle, idx, j)
     }
     return result
   }
@@ -712,9 +744,8 @@ class GAMModel {
     this.#ensureFitted()
     const rawBytes = this.#saveRaw()
     const family = resolveEnum(FAMILY, this.#params.family, 0)
-    const typeId = (family === 1 || family === 7)
-      ? 'wlearn.gam.classifier@1'
-      : 'wlearn.gam.regressor@1'
+    const kind = (family === 1 || family === 7) ? 'classifier' : 'regressor'
+    const typeId = `wlearn.gam.${kind}@${this.hasRelaxed ? 2 : 1}`
 
     const metadata = {
       nFeatures: this.#nFeatures,
@@ -723,7 +754,8 @@ class GAMModel {
 
     return encodeBundle(
       { typeId, params: this.getParams(), metadata },
-      [{ id: 'model', data: rawBytes }]
+      [{ id: 'model', data: rawBytes, mediaType: this.#artifactMediaType ||
+        (this.hasRelaxed ? 'application/vnd.wlearn.gam.raw' : 'application/octet-stream') }]
     )
   }
 
@@ -739,6 +771,10 @@ class GAMModel {
     const entry = toc.find(e => e.id === 'model')
     if (!entry) throw new Error('Bundle missing "model" artifact')
     const raw = blobs.subarray(entry.offset, entry.offset + entry.length)
+    const version = /^wlearn\.gam\.(classifier|regressor)@([12])$/.exec(manifest.typeId)?.[2]
+    if (!version || raw.length < 4 || String.fromCharCode(...raw.subarray(0, 4)) !== `GAM${version}`) {
+      throw new Error('GAM bundle typeId and model format disagree')
+    }
 
     const bufPtr = wasm._malloc(raw.length)
     wasm.HEAPU8.set(raw, bufPtr)
@@ -755,7 +791,7 @@ class GAMModel {
     const nFits = metadata.nFits || wasm._wl_gam_get_n_fits(modelPtr)
 
     return new GAMModel(LOAD_SENTINEL, modelPtr, {
-      params, nFeatures, nFits
+      params, nFeatures, nFits, artifactMediaType: entry.mediaType
     })
   }
 
@@ -881,5 +917,7 @@ class GAMModel {
 
 register('wlearn.gam.classifier@1', (m, t, b) => GAMModel._fromBundle(m, t, b))
 register('wlearn.gam.regressor@1', (m, t, b) => GAMModel._fromBundle(m, t, b))
+register('wlearn.gam.classifier@2', (m, t, b) => GAMModel._fromBundle(m, t, b))
+register('wlearn.gam.regressor@2', (m, t, b) => GAMModel._fromBundle(m, t, b))
 
 module.exports = { GAMModel }

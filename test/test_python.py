@@ -125,6 +125,8 @@ lib.wl_gam_predict.argtypes = [
     ctypes.POINTER(ctypes.c_double)
 ]
 lib.wl_gam_predict.restype = ctypes.c_int
+lib.wl_gam_predict_relaxed.argtypes = lib.wl_gam_predict.argtypes
+lib.wl_gam_predict_relaxed.restype = ctypes.c_int
 
 lib.wl_gam_free.argtypes = [ctypes.c_void_p]
 lib.wl_gam_free.restype = None
@@ -300,12 +302,13 @@ def get_coefs(path, fit_idx, n_coefs):
     return np.array([lib.wl_gam_get_coef(path, fit_idx, j) for j in range(n_coefs)])
 
 
-def predict_gam(path, fit_idx, X):
+def predict_gam(path, fit_idx, X, *, relaxed=False):
     """Predict using GAM path."""
     n, d = X.shape
     X_c = np.ascontiguousarray(X, dtype=np.float64)
     out = np.zeros(n, dtype=np.float64)
-    ret = lib.wl_gam_predict(
+    predict = lib.wl_gam_predict_relaxed if relaxed else lib.wl_gam_predict
+    ret = predict(
         path, fit_idx,
         X_c.ctypes.data_as(ctypes.POINTER(ctypes.c_double)), n, d,
         out.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
@@ -1064,10 +1067,15 @@ def test_relaxed_fits():
     pred_pen = predict_gam(path, target_idx, X)
     r2_pen = 1 - np.sum((y - pred_pen)**2) / np.sum((y - y.mean())**2)
 
-    # Relaxed fit: need to check if relaxed_fits exists
-    # For now, just verify the fit ran and R2 is good
-    print(f'  R2 penalized (fit {target_idx}): {r2_pen:.4f}')
-    check(r2_pen > 0.9, f'good R2 (got {r2_pen:.4f})')
+    pred_relaxed = predict_gam(path, target_idx, X, relaxed=True)
+    active = get_coefs(path, target_idx, d + 1)[1:] != 0
+    design = np.column_stack([np.ones(n), X[:, active]])
+    reference = design @ np.linalg.lstsq(design, y, rcond=None)[0]
+    r2_relaxed = 1 - np.sum((y - pred_relaxed)**2) / np.sum((y - y.mean())**2)
+    print(f'  R2 penalized: {r2_pen:.4f}; relaxed: {r2_relaxed:.4f}')
+    check(np.allclose(pred_relaxed, reference, atol=1e-5), 'relaxed predictions match independent active-set OLS')
+    check(np.max(np.abs(pred_relaxed - pred_pen)) > 0.1, 'relaxed path differs from penalized path')
+    check(r2_relaxed > 0.9, f'good relaxed R2 (got {r2_relaxed:.4f})')
 
     lib.wl_gam_free(path)
 
@@ -1665,7 +1673,7 @@ def test_multinomial():
     # Compare with sklearn
     try:
         from sklearn.linear_model import LogisticRegression
-        sk = LogisticRegression(multi_class='multinomial', solver='lbfgs',
+        sk = LogisticRegression(solver='lbfgs',
                                 max_iter=5000, C=10.0)
         sk.fit(X, y)
         sk_acc = sk.score(X, y)

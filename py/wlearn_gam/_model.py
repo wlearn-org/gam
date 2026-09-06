@@ -9,6 +9,8 @@ from ._ffi import get_lib
 
 TYPE_ID_CLASSIFIER = "wlearn.gam.classifier@1"
 TYPE_ID_REGRESSOR = "wlearn.gam.regressor@1"
+TYPE_ID_CLASSIFIER_V2 = "wlearn.gam.classifier@2"
+TYPE_ID_REGRESSOR_V2 = "wlearn.gam.regressor@2"
 
 FAMILY = {
     "gaussian": 0,
@@ -96,6 +98,12 @@ def _declare(lib):
         ctypes.c_void_p, _I, _DP, _I, _I, _DP,
     ]
     lib.wl_gam_predict.restype = _I
+    lib.wl_gam_predict_relaxed.argtypes = lib.wl_gam_predict.argtypes
+    lib.wl_gam_predict_relaxed.restype = _I
+    lib.wl_gam_has_relaxed.argtypes = [ctypes.c_void_p]
+    lib.wl_gam_has_relaxed.restype = _I
+    lib.wl_gam_get_relaxed_coef.argtypes = [ctypes.c_void_p, _I, _I]
+    lib.wl_gam_get_relaxed_coef.restype = _D
     lib.wl_gam_predict_eta.argtypes = lib.wl_gam_predict.argtypes
     lib.wl_gam_predict_eta.restype = _I
     lib.wl_gam_predict_proba.argtypes = lib.wl_gam_predict.argtypes
@@ -197,6 +205,8 @@ class GAMModel:
             raise RuntimeError("GAMModel has been disposed")
 
         lib = _lib()
+        if self._params.get("relax") and self._params.get("groups") is not None:
+            raise ValueError("relax is not supported by the group fitting ABI")
         self._free_handle()
 
         X = _as_matrix(X)
@@ -261,6 +271,7 @@ class GAMModel:
             raise RuntimeError(f"GAM fit failed: {_last_error(lib)}")
 
         self._handle = handle
+        self._artifact_media_type = 'application/vnd.wlearn.gam.raw'
         self._fitted = True
         self._n_features = ncol
         self._n_fits = lib.wl_gam_get_n_fits(handle)
@@ -268,6 +279,13 @@ class GAMModel:
 
     def predict(self, X, fit_idx=None):
         return self._predict_common(X, fit_idx, "wl_gam_predict", "predict")
+
+    def predict_relaxed(self, X, fit_idx=None):
+        return self._predict_common(X, fit_idx, "wl_gam_predict_relaxed", "predict_relaxed")
+
+    @property
+    def has_relaxed(self):
+        return bool(self._handle and not self._disposed and _lib().wl_gam_has_relaxed(self._handle))
 
     def predict_eta(self, X, fit_idx=None):
         return self._predict_common(X, fit_idx, "wl_gam_predict_eta", "predict_eta")
@@ -289,12 +307,21 @@ class GAMModel:
         return 1.0 - ss_res / ss_tot if ss_tot > 0 else 0.0
 
     def get_coefs(self, fit_idx=None):
+        return self._get_coefs(fit_idx, False)
+
+    def get_relaxed_coefs(self, fit_idx=None):
+        return self._get_coefs(fit_idx, True)
+
+    def _get_coefs(self, fit_idx, relaxed):
         self._ensure_fitted()
         lib = _lib()
         idx = self._resolve_fit_idx(fit_idx)
+        if relaxed and not self.has_relaxed:
+            raise RuntimeError("Model has no relaxed fit")
         n_coefs = lib.wl_gam_get_n_coefs(self._handle)
+        get_coef = lib.wl_gam_get_relaxed_coef if relaxed else lib.wl_gam_get_coef
         return np.array(
-            [lib.wl_gam_get_coef(self._handle, idx, i) for i in range(n_coefs)],
+            [get_coef(self._handle, idx, i) for i in range(n_coefs)],
             dtype=np.float64,
         )
 
@@ -321,7 +348,10 @@ class GAMModel:
     def save(self, path=None):
         raw = self._save_raw()
         family = _resolve_enum(FAMILY, self._params.get("family"), 0)
-        type_id = TYPE_ID_CLASSIFIER if family in (1, 7) else TYPE_ID_REGRESSOR
+        if self.has_relaxed:
+            type_id = TYPE_ID_CLASSIFIER_V2 if family in (1, 7) else TYPE_ID_REGRESSOR_V2
+        else:
+            type_id = TYPE_ID_CLASSIFIER if family in (1, 7) else TYPE_ID_REGRESSOR
         bundle = encode_bundle(
             {
                 "typeId": type_id,
@@ -333,7 +363,7 @@ class GAMModel:
             },
             [{
                 "id": "model",
-                "mediaType": "application/vnd.wlearn.gam.raw",
+                "mediaType": getattr(self, '_artifact_media_type', 'application/vnd.wlearn.gam.raw'),
                 "data": raw,
             }],
         )
@@ -347,16 +377,20 @@ class GAMModel:
     @classmethod
     def _from_bundle(cls, manifest, toc, blobs):
         type_id = manifest.get("typeId")
-        if type_id not in (TYPE_ID_CLASSIFIER, TYPE_ID_REGRESSOR):
+        if type_id not in (TYPE_ID_CLASSIFIER, TYPE_ID_REGRESSOR, TYPE_ID_CLASSIFIER_V2, TYPE_ID_REGRESSOR_V2):
             raise ValueError(f"Unsupported GAM bundle typeId: {type_id}")
         entry = next((item for item in toc if item["id"] == "model"), None)
         if entry is None:
             raise ValueError('Bundle missing "model" artifact')
         raw = bytes(blobs[entry["offset"]:entry["offset"] + entry["length"]])
+        if raw[:4] != f"GAM{type_id[-1]}".encode('ascii'):
+            raise ValueError("GAM bundle typeId and model format disagree")
         params = dict(manifest.get("params") or {})
-        if type_id == TYPE_ID_CLASSIFIER:
+        if type_id in (TYPE_ID_CLASSIFIER, TYPE_ID_CLASSIFIER_V2):
             params.setdefault("family", "binomial")
-        return cls._load_raw(raw, params)
+        model = cls._load_raw(raw, params)
+        model._artifact_media_type = entry['mediaType']
+        return model
 
     def _save_raw(self):
         self._ensure_fitted()
@@ -503,3 +537,5 @@ class GAMModel:
 
 register(TYPE_ID_CLASSIFIER, GAMModel._from_bundle)
 register(TYPE_ID_REGRESSOR, GAMModel._from_bundle)
+register(TYPE_ID_CLASSIFIER_V2, GAMModel._from_bundle)
+register(TYPE_ID_REGRESSOR_V2, GAMModel._from_bundle)

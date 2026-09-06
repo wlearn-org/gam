@@ -2341,7 +2341,88 @@ static void test_gamlss_gamma(void) {
     free(X); free(y);
 }
 
+/* A fully active penalized model still requires an unpenalized refit. */
+static void test_relaxed_all_active_and_roundtrip(void) {
+    double X[80], y[80], lambda = 0.3;
+    for (int i = 0; i < 80; i++) {
+        X[i] = (i - 39.5) / 10.0;
+        y[i] = 1.25 + 3.0 * X[i];
+    }
+    gam_params_t p;
+    gam_params_init(&p);
+    p.penalty = GAM_PENALTY_L1;
+    p.lambda = &lambda; p.n_lambda_user = 1; p.n_lambda = 1;
+    p.relax = 1;
+    gam_path_t *path = gam_fit(X, 80, 1, y, &p);
+    ASSERT(path && path->relaxed_fits, "relaxed path exists");
+    if (!path || !path->relaxed_fits) { gam_free(path); return; }
+    ASSERT(fabs(path->fits[0].beta[1] - 3.0) > 0.1, "penalty actually shrinks the slope");
+    ASSERT(fabs(path->relaxed_fits[0].beta[1] - 3.0) < 1e-5, "all-active relaxed slope matches OLS");
+    ASSERT(fabs(path->relaxed_fits[0].beta[0] - 1.25) < 1e-5, "relaxed intercept matches OLS");
+    char *buf = NULL;
+    int32_t len = 0;
+    ASSERT(gam_save(path, &buf, &len) == 0, "relaxed save succeeds");
+    ASSERT(memcmp(buf, "GAM2", 4) == 0, "relaxed payload is explicitly versioned");
+    for (int32_t truncated = 0; truncated < len; truncated++) {
+        gam_path_t *bad = gam_load(buf, truncated);
+        ASSERT(bad == NULL, "every truncated GAM2 payload is rejected");
+        gam_free(bad);
+    }
+    char saved = buf[4];
+    buf[4] = 0;
+    gam_path_t *bad = gam_load(buf, len);
+    ASSERT(bad == NULL, "inconsistent GAM2 child length is rejected");
+    gam_free(bad);
+    buf[4] = saved;
+    double out[80];
+    ASSERT(gam_predict_relaxed(path, path->n_fits, X, 80, 1, out) != 0, "invalid relaxed index is rejected");
+    ASSERT(isnan(gam_get_relaxed_coef(path, 0, path->n_coefs)), "invalid relaxed coefficient is rejected");
+    gam_path_t *loaded = gam_load(buf, len);
+    ASSERT(loaded && loaded->relaxed_fits, "relaxed state survives loading");
+    if (loaded && loaded->relaxed_fits) {
+        ASSERT(loaded->relaxed_fits[0].beta[1] == path->relaxed_fits[0].beta[1], "relaxed coefficient round trip is exact");
+    }
+    gam_free_buffer(buf);
+    gam_free(loaded);
+    gam_free(path);
+}
+
 /* ---- Main ---- */
+static void test_relaxed_weights_and_offsets(void) {
+    double X[] = {-2, -1, 0, 1, 2, 3};
+    double weights[] = {1, 2, 1, 0.1, 2, 1};
+    double offset[] = {0.4, -0.8, 0.1, 1.2, -0.3, 0.5};
+    double noise[] = {0.2, -0.1, 0.4, 3, -1, 0.2}, y[6];
+    double sw = 0, sx = 0, sy = 0, sxx = 0, sxy = 0;
+    for (int i = 0; i < 6; i++) {
+        y[i] = 1.25 + 3 * X[i] + offset[i] + noise[i];
+        sw += weights[i]; sx += weights[i] * X[i];
+        sy += weights[i] * (y[i] - offset[i]);
+        sxx += weights[i] * X[i] * X[i];
+        sxy += weights[i] * X[i] * (y[i] - offset[i]);
+    }
+    double slope = (sxy - sx * sy / sw) / (sxx - sx * sx / sw);
+    double intercept = (sy - slope * sx) / sw;
+    for (int standardize = 0; standardize <= 1; standardize++) {
+        for (int empty = 0; empty <= 1; empty++) {
+            double lambda = empty ? 1000 : 0.05;
+            gam_params_t p; gam_params_init(&p);
+            p.penalty = GAM_PENALTY_L1; p.relax = 1;
+            p.lambda = &lambda; p.n_lambda_user = 1; p.n_lambda = 1;
+            p.sample_weight = weights; p.offset = offset; p.standardize = standardize;
+            p.tol = 1e-10;
+            gam_path_t *path = gam_fit(X, 6, 1, y, &p);
+            ASSERT(path && path->relaxed_fits, "weighted relaxed path exists");
+            if (!path || !path->relaxed_fits) { gam_free(path); continue; }
+            ASSERT(fabs(path->relaxed_fits[0].beta[0] - (empty ? sy / sw : intercept)) < 1e-6,
+                   "weighted offset-adjusted relaxed intercept matches analytic reference");
+            ASSERT(fabs(path->relaxed_fits[0].beta[1] - (empty ? 0 : slope)) < 1e-6,
+                   "weighted offset-adjusted relaxed slope matches analytic reference");
+            gam_free(path);
+        }
+    }
+}
+
 int main(void) {
     printf("\n== GAM C Tests ==\n\n");
 
@@ -2357,6 +2438,8 @@ int main(void) {
     test_quantile_knots();
     test_serialization();
     test_relaxed();
+    test_relaxed_all_active_and_roundtrip();
+    test_relaxed_weights_and_offsets();
     test_penalty_factors();
     test_gamma();
     test_diagnostics();

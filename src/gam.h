@@ -317,6 +317,14 @@ int gam_predict_proba(
     double *out
 );
 
+/* Explicit relaxed response prediction; ordinary prediction remains unchanged.
+ * Fails when no relaxed path exists. Coefficient access reports invalid indices
+ * or missing relaxed state as NAN and sets gam_get_error(). */
+int gam_predict_relaxed(const gam_path_t *path, int32_t fit_idx,
+                        const double *X, int32_t nrow, int32_t ncol, double *out);
+double gam_get_relaxed_coef(const gam_path_t *path, int32_t fit_idx, int32_t coef_idx);
+int gam_has_relaxed(const gam_path_t *path);
+
 /* Get deviance, AIC, BIC for a single fit */
 double gam_deviance(const gam_path_t *path, int32_t fit_idx);
 double gam_aic(const gam_path_t *path, int32_t fit_idx, int32_t nrow);

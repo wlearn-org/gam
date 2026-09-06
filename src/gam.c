@@ -22,6 +22,7 @@
 #include <string.h>
 #include <math.h>
 #include <float.h>
+#include <limits.h>
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -2568,6 +2569,78 @@ static void compute_cv(
     free(counts);
 }
 
+/* Refit on the selected expanded columns in original units. In particular,
+ * weights/offsets and robust-family parameters retain their original scale.
+ * The outer path owns all resulting coefficients; temporary paths are borrowed
+ * only until their coefficients and diagnostics have been copied. */
+static int fit_relaxed_paths(gam_path_t *path, const double *Xs,
+                             int32_t nrow, int32_t ncol, int32_t p,
+                             const double *x_mean, const double *x_sd,
+                             const double *y, const gam_params_t *params) {
+    path->relaxed_fits = (gam_fit_t *)calloc((size_t)path->n_fits, sizeof(gam_fit_t));
+    if (!path->relaxed_fits) { gam_set_error("relaxed fit: allocation failed"); return -1; }
+    for (int32_t k = 0; k < path->n_fits; k++) {
+        const gam_fit_t *orig = &path->fits[k];
+        gam_fit_t *dest = &path->relaxed_fits[k];
+        int32_t n_active = 0;
+        for (int32_t j = 0; j < p; j++) if (orig->beta[j + 1] != 0.0) n_active++;
+        /* gam_fit requires a column; a zero dummy column represents an
+         * intercept-only active set without changing the likelihood solver. */
+        int32_t m = n_active ? n_active : 1;
+        double *Xa = (double *)calloc((size_t)nrow * (size_t)m, sizeof(double));
+        int32_t *columns = (int32_t *)calloc((size_t)m, sizeof(int32_t));
+        double *lower = (double *)calloc((size_t)m, sizeof(double));
+        double *upper = (double *)calloc((size_t)m, sizeof(double));
+        if (!Xa || !columns || !lower || !upper) {
+            free(Xa); free(columns); free(lower); free(upper);
+            gam_set_error("relaxed fit: allocation failed"); return -1;
+        }
+        int32_t a = 0;
+        for (int32_t j = 0; j < p; j++) {
+            if (orig->beta[j + 1] == 0.0) continue;
+            columns[a] = j;
+            lower[a] = (params->lower_bounds && j < ncol) ? params->lower_bounds[j] : -1e30;
+            upper[a] = (params->upper_bounds && j < ncol) ? params->upper_bounds[j] : 1e30;
+            for (int32_t i = 0; i < nrow; i++) Xa[i * m + a] = Xs[i * p + j] * x_sd[j] + x_mean[j];
+            a++;
+        }
+        gam_params_t rp = *params;
+        double lambda = 0.0;
+        rp.penalty = GAM_PENALTY_NONE;
+        rp.lambda = &lambda; rp.n_lambda = 1; rp.n_lambda_user = 1;
+        rp.standardize = 0; rp.relax = 0; rp.n_folds = 0; rp.screening = 0;
+        rp.smooths = NULL; rp.n_smooths = 0;
+        rp.tensors = NULL; rp.n_tensors = 0;
+        rp.groups = NULL; rp.n_groups = 0; rp.penalty_factor = NULL;
+        rp.slope_lambda = NULL; rp.slope_n_lambda = 0;
+        rp.lower_bounds = lower; rp.upper_bounds = upper;
+        gam_path_t *refit = gam_fit(Xa, nrow, m, y, &rp);
+        free(Xa); free(lower); free(upper);
+        if (!refit || refit->n_fits != 1 || !refit->fits[0].beta) {
+            free(columns); gam_free(refit);
+            gam_set_error("relaxed fit: active-set refit failed"); return -1;
+        }
+        *dest = refit->fits[0];
+        dest->beta = (double *)calloc((size_t)(p + 1), sizeof(double));
+        if (!dest->beta) {
+            free(columns); gam_free(refit);
+            gam_set_error("relaxed fit: allocation failed"); return -1;
+        }
+        dest->beta[0] = refit->fits[0].beta[0];
+        for (int32_t j = 0; j < n_active; j++) dest->beta[columns[j] + 1] = refit->fits[0].beta[j + 1];
+        dest->n_coefs = p + 1;
+        dest->lambda = orig->lambda;  /* identifies the selecting penalized fit */
+        dest->cv_mean = NAN; dest->cv_se = NAN;  /* no CV was run for this refit */
+        free(columns); gam_free(refit);
+        for (int32_t j = 0; j <= p; j++) {
+            if (!isfinite(dest->beta[j])) {
+                gam_set_error("relaxed fit: non-finite coefficient"); return -1;
+            }
+        }
+    }
+    return 0;
+}
+
 /* ========== Main fit function ========== */
 
 gam_path_t *gam_fit(
@@ -2664,22 +2737,28 @@ gam_path_t *gam_fit(
         gam_set_error("gam_fit: alloc failed");
         return NULL;
     }
-    memcpy(y_work, y, (size_t)nrow * sizeof(double));
+    int identity_response = (family == GAM_FAMILY_GAUSSIAN || family == GAM_FAMILY_HUBER ||
+                             family == GAM_FAMILY_QUANTILE) && link == GAM_LINK_IDENTITY;
+    /* An identity-link offset is a known response component. Subtract it before
+     * scaling so ordinary and relaxed fits solve the same original-unit loss. */
+    for (int32_t i = 0; i < nrow; i++) {
+        y_work[i] = y[i] - (identity_response && params->offset ? params->offset[i] : 0.0);
+    }
 
     if ((family == GAM_FAMILY_GAUSSIAN || family == GAM_FAMILY_HUBER ||
          family == GAM_FAMILY_QUANTILE) && link == GAM_LINK_IDENTITY && params->standardize) {
         double sum = 0.0;
-        for (int32_t i = 0; i < nrow; i++) sum += y[i];
+        for (int32_t i = 0; i < nrow; i++) sum += y_work[i];
         y_mean = sum / nrow;
         double ss = 0.0;
         for (int32_t i = 0; i < nrow; i++) {
-            double d = y[i] - y_mean;
+            double d = y_work[i] - y_mean;
             ss += d * d;
         }
         y_sd = sqrt(ss / nrow);
         if (y_sd < 1e-10) y_sd = 1.0;
         for (int32_t i = 0; i < nrow; i++) {
-            y_work[i] = (y[i] - y_mean) / y_sd;
+            y_work[i] = (y_work[i] - y_mean) / y_sd;
         }
     }
 
@@ -2701,7 +2780,7 @@ gam_path_t *gam_fit(
     w.fit_intercept = params->fit_intercept;
     w.tol = params->tol;
     w.sample_weight = params->sample_weight;
-    w.offset = params->offset;
+    w.offset = identity_response ? NULL : params->offset;
     w.fused_order = (params->fused_order > 0) ? params->fused_order : 1;
     w.huber_gamma = (params->huber_gamma > 0) ? params->huber_gamma : 1.345;
     /* Scale gamma to standardized y scale */
@@ -2798,7 +2877,9 @@ gam_path_t *gam_fit(
     }
 
     /* Initialize weights, penalty factors, bounds */
-    for (int32_t i = 0; i < nrow; i++) w.w[i] = 1.0;
+    for (int32_t i = 0; i < nrow; i++) {
+        w.w[i] = (family == GAM_FAMILY_GAUSSIAN && params->sample_weight) ? params->sample_weight[i] : 1.0;
+    }
     for (int32_t j = 0; j < p; j++) {
         w.pf[j] = (params->penalty_factor && j < ncol) ? params->penalty_factor[j] : 1.0;
         w.lb[j] = (params->lower_bounds && j < ncol) ? params->lower_bounds[j] : -1e30;
@@ -2809,7 +2890,11 @@ gam_path_t *gam_fit(
     if (params->fit_intercept) {
         if ((family == GAM_FAMILY_GAUSSIAN || family == GAM_FAMILY_HUBER ||
              family == GAM_FAMILY_QUANTILE) && link == GAM_LINK_IDENTITY) {
-            w.intercept = 0.0;  /* y is already centered */
+            double sum_w = 0.0, sum_y = 0.0;
+            for (int32_t i = 0; i < nrow; i++) {
+                sum_w += w.w[i]; sum_y += w.w[i] * y_work[i];
+            }
+            w.intercept = sum_y / fmax(sum_w, 1e-15);
         } else if (family == GAM_FAMILY_BINOMIAL) {
             double ysum = 0.0;
             for (int32_t i = 0; i < nrow; i++) ysum += y_work[i];
@@ -3095,109 +3180,10 @@ gam_path_t *gam_fit(
         }
     }
 
-    /* ---- Relaxed fits ---- */
+    int relaxed_status = 0;
     if (params->relax && n_fits > 0) {
-        path->relaxed_fits = (gam_fit_t *)calloc((size_t)n_fits, sizeof(gam_fit_t));
-        if (path->relaxed_fits) {
-            for (int32_t k = 0; k < n_fits; k++) {
-                gam_fit_t *orig = &path->fits[k];
-                gam_fit_t *relaxed = &path->relaxed_fits[k];
-
-                /* Count active features */
-                int32_t n_active = 0;
-                for (int32_t j = 0; j < p; j++) {
-                    if (orig->beta[j + 1] != 0.0) n_active++;
-                }
-
-                if (n_active == 0 || n_active >= p) {
-                    /* Nothing to relax */
-                    relaxed->beta = (double *)malloc((size_t)(p + 1) * sizeof(double));
-                    if (relaxed->beta) {
-                        memcpy(relaxed->beta, orig->beta, (size_t)(p + 1) * sizeof(double));
-                    }
-                    relaxed->n_coefs = orig->n_coefs;
-                    relaxed->lambda = orig->lambda;
-                    relaxed->deviance = orig->deviance;
-                    relaxed->null_deviance = orig->null_deviance;
-                    relaxed->df = orig->df;
-                    relaxed->cv_mean = NAN;
-                    relaxed->cv_se = NAN;
-                    continue;
-                }
-
-                /* Build reduced X with only active features */
-                double *X_active = (double *)malloc((size_t)nrow * (size_t)n_active * sizeof(double));
-                if (!X_active) continue;
-
-                int32_t col_idx = 0;
-                int32_t *active_cols = (int32_t *)malloc((size_t)n_active * sizeof(int32_t));
-                if (!active_cols) { free(X_active); continue; }
-
-                for (int32_t j = 0; j < p; j++) {
-                    if (orig->beta[j + 1] != 0.0) {
-                        for (int32_t i = 0; i < nrow; i++) {
-                            X_active[i * n_active + col_idx] = X_expanded[i * p + j];
-                        }
-                        active_cols[col_idx] = j;
-                        col_idx++;
-                    }
-                }
-
-                /* Fit unpenalized on active set */
-                gam_params_t relax_params;
-                gam_params_init(&relax_params);
-                relax_params.family = family;
-                relax_params.link = link;
-                relax_params.penalty = GAM_PENALTY_NONE;
-                relax_params.standardize = 0;  /* already standardized */
-                relax_params.fit_intercept = params->fit_intercept;
-                relax_params.n_lambda = 1;
-                double lam0 = 0.0;
-                relax_params.lambda = &lam0;
-                relax_params.n_lambda_user = 1;
-
-                gam_path_t *rpath = gam_fit(X_active, nrow, n_active, y_work, &relax_params);
-                if (rpath && rpath->n_fits > 0) {
-                    relaxed->beta = (double *)calloc((size_t)(p + 1), sizeof(double));
-                    if (relaxed->beta) {
-                        relaxed->beta[0] = rpath->fits[0].beta[0];
-                        for (int32_t a = 0; a < n_active; a++) {
-                            relaxed->beta[active_cols[a] + 1] = rpath->fits[0].beta[a + 1];
-                        }
-                        /* Unstandardize if needed */
-                        if ((family == GAM_FAMILY_GAUSSIAN || family == GAM_FAMILY_HUBER ||
-                 family == GAM_FAMILY_QUANTILE) && link == GAM_LINK_IDENTITY && params->standardize) {
-                            double b0 = relaxed->beta[0] * y_sd + y_mean;
-                            for (int32_t j = 0; j < p; j++) {
-                                if (relaxed->beta[j + 1] != 0.0) {
-                                    relaxed->beta[j + 1] *= y_sd / x_sd[j];
-                                    b0 -= relaxed->beta[j + 1] * x_mean[j];
-                                }
-                            }
-                            relaxed->beta[0] = b0;
-                        } else if (params->standardize) {
-                            for (int32_t j = 0; j < p; j++) {
-                                if (relaxed->beta[j + 1] != 0.0) {
-                                    relaxed->beta[j + 1] /= x_sd[j];
-                                    relaxed->beta[0] -= relaxed->beta[j + 1] * x_mean[j];
-                                }
-                            }
-                        }
-                    }
-                    relaxed->n_coefs = p + 1;
-                    relaxed->lambda = orig->lambda;
-                    relaxed->df = n_active;
-                    relaxed->deviance = rpath->fits[0].deviance;
-                    relaxed->null_deviance = orig->null_deviance;
-                    relaxed->cv_mean = NAN;
-                    relaxed->cv_se = NAN;
-                    gam_free(rpath);
-                }
-
-                free(X_active);
-                free(active_cols);
-            }
-        }
+        relaxed_status = fit_relaxed_paths(path, X_expanded, nrow, ncol, p,
+                                          x_mean, x_sd, y, params);
     }
 
     /* Cleanup work arrays (but keep x_mean, x_sd, basis_map in path) */
@@ -3215,6 +3201,7 @@ gam_path_t *gam_fit(
     }
     free(X_expanded); free(y_work); free(lambda_seq); free(fold_ids);
 
+    if (relaxed_status != 0) { gam_free(path); return NULL; }
     return path;
 
 cleanup_work:
@@ -3236,6 +3223,36 @@ cleanup_work:
 }
 
 /* ========== Prediction ========== */
+
+int gam_has_relaxed(const gam_path_t *path) {
+    return path && path->n_fits > 0 && path->relaxed_fits != NULL;
+}
+
+double gam_get_relaxed_coef(const gam_path_t *path, int32_t fit_idx, int32_t coef_idx) {
+    if (!gam_has_relaxed(path) || fit_idx < 0 || fit_idx >= path->n_fits) {
+        gam_set_error("relaxed coefficients: missing relaxed path or invalid fit index");
+        return NAN;
+    }
+    const gam_fit_t *fit = &path->relaxed_fits[fit_idx];
+    if (!fit->beta || coef_idx < 0 || coef_idx >= fit->n_coefs) {
+        gam_set_error("relaxed coefficients: invalid coefficient index");
+        return NAN;
+    }
+    return fit->beta[coef_idx];
+}
+
+int gam_predict_relaxed(const gam_path_t *path, int32_t fit_idx,
+                        const double *X, int32_t nrow, int32_t ncol, double *out) {
+    if (!gam_has_relaxed(path) || fit_idx < 0 || fit_idx >= path->n_fits ||
+        !path->relaxed_fits[fit_idx].beta) {
+        gam_set_error("relaxed prediction: missing relaxed path or invalid fit index");
+        return -1;
+    }
+    /* Stack-local borrowed view: prediction never frees or mutates its path. */
+    gam_path_t view = *path;
+    view.fits = path->relaxed_fits;
+    return gam_predict(&view, fit_idx, X, nrow, ncol, out);
+}
 
 int gam_predict_eta(
     const gam_path_t *path, int32_t fit_idx,
@@ -5506,6 +5523,33 @@ static const char GAM_MAGIC[4] = {'G', 'A', 'M', '1'};
 int gam_save(const gam_path_t *path, char **out_buf, int32_t *out_len) {
     if (!path) { gam_set_error("gam_save: NULL path"); return -1; }
 
+    if (gam_has_relaxed(path)) {
+        /* GAM2 contains two length-delimited GAM1 paths. Reusing the existing
+         * writer keeps ordinary artifacts byte-identical and gives each fit
+         * set the same diagnostics and coefficient encoding. */
+        gam_path_t ordinary = *path, relaxed = *path;
+        ordinary.relaxed_fits = NULL;
+        relaxed.relaxed_fits = NULL;
+        relaxed.fits = path->relaxed_fits;
+        char *a = NULL, *b = NULL;
+        int32_t na = 0, nb = 0;
+        if (gam_save(&ordinary, &a, &na) != 0 || gam_save(&relaxed, &b, &nb) != 0) {
+            free(a); free(b); return -1;
+        }
+        if (na > INT32_MAX - 8 - nb) {
+            free(a); free(b); gam_set_error("gam_save: model too large"); return -1;
+        }
+        char *buf = (char *)malloc((size_t)8 + na + nb);
+        if (!buf) { free(a); free(b); gam_set_error("gam_save: alloc failed"); return -1; }
+        memcpy(buf, "GAM2", 4);
+        memcpy(buf + 4, &na, 4);
+        memcpy(buf + 8, a, (size_t)na);
+        memcpy(buf + 8 + na, b, (size_t)nb);
+        free(a); free(b);
+        *out_buf = buf; *out_len = 8 + na + nb;
+        return 0;
+    }
+
     /* Calculate buffer size */
     size_t size = 4;  /* magic */
     size += sizeof(int32_t) * 8;  /* n_fits, n_features, n_coefs, family, link, penalty, idx_min, idx_1se */
@@ -5598,7 +5642,31 @@ int gam_save(const gam_path_t *path, char **out_buf, int32_t *out_len) {
 }
 
 gam_path_t *gam_load(const char *buf, int32_t len) {
-    if (len < 4 || memcmp(buf, GAM_MAGIC, 4) != 0) {
+    if (buf && len >= 4 && memcmp(buf, "GAM2", 4) == 0) {
+        int32_t na = 0;
+        if (len >= 8) memcpy(&na, buf + 4, 4);
+        if (na < 4 || len < 16 || na > len - 12 ||
+            memcmp(buf + 8, GAM_MAGIC, 4) != 0 ||
+            memcmp(buf + 8 + na, GAM_MAGIC, 4) != 0) {
+            gam_set_error("gam_load: invalid GAM2 paths"); return NULL;
+        }
+        /* Children must be GAM1: malformed data cannot cause recursive loads. */
+        gam_path_t *a = gam_load(buf + 8, na);
+        gam_path_t *b = a ? gam_load(buf + 8 + na, len - 8 - na) : NULL;
+        if (!a || !b) { gam_free(a); gam_free(b); return NULL; }
+        size_t header_len = 76u + (size_t)a->n_smooths * 20u +
+            (size_t)a->n_tensors * 84u + (size_t)a->n_features * 16u;
+        if (header_len > (size_t)na || header_len > (size_t)(len - 8 - na) ||
+            memcmp(buf + 8, buf + 8 + na, header_len) != 0) {
+            gam_free(a); gam_free(b);
+            gam_set_error("gam_load: GAM2 path metadata differ"); return NULL;
+        }
+        a->relaxed_fits = b->fits;
+        b->fits = NULL;
+        gam_free(b);
+        return a;
+    }
+    if (!buf || len < 4 || memcmp(buf, GAM_MAGIC, 4) != 0) {
         gam_set_error("gam_load: invalid magic");
         return NULL;
     }
@@ -5632,6 +5700,15 @@ gam_path_t *gam_load(const char *buf, int32_t len) {
     /* Read smooth/tensor term specs */
     READ_I32(path->n_smooths);
     READ_I32(path->n_tensors);
+    /* Bound counts by available encoded bytes before any count-sized allocation.
+     * This also bounds all products below and rejects truncated GAM2 children. */
+    if (n_fits < 1 || n_fits > len / 48 || path->n_features < 1 ||
+        path->n_features > len / 16 || path->n_coefs < 1 || path->n_coefs > len / 8 ||
+        path->n_smooths < 0 || path->n_tensors < 0 ||
+        (uint64_t)path->n_features * 16 + (uint64_t)n_fits * (48 + (uint64_t)path->n_coefs * 8) +
+        (uint64_t)path->n_smooths * 20 + (uint64_t)path->n_tensors * 84 != (uint64_t)(buf + len - p)) {
+        gam_free(path); gam_set_error("gam_load: invalid path counts or length"); return NULL;
+    }
     if (path->n_smooths > 0) {
         path->smooths = (gam_smooth_t *)calloc((size_t)path->n_smooths, sizeof(gam_smooth_t));
         if (!path->smooths) { gam_free(path); gam_set_error("gam_load: alloc"); return NULL; }

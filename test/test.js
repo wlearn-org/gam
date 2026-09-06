@@ -1368,6 +1368,59 @@ await test('gamlss save + load roundtrip', async () => {
 })
 
 // ============================================================
+await test('relaxed coefficients and predictions survive versioned bundles', async () => {
+  const a = require('node:assert/strict')
+  const X = Array.from({ length: 80 }, (_, i) => [(i - 39.5) / 10])
+  const y = X.map(([x]) => 1.25 + 3 * x)
+  const model = await GAMModel.create({ family: 'gaussian', penalty: 'lasso', relax: 1, nLambda: 3, lambdaMinRatio: 0.3 })
+  try {
+    model.fit(X, y)
+    a.equal(model.hasRelaxed, true)
+    a.ok(Math.abs(model.getCoefs(2)[1] - 3) > 0.1)
+    a.ok(Math.abs(model.getRelaxedCoefs(2)[1] - 3) < 1e-5)
+    const ordinary = model.predict(X, 2)
+    const relaxed = model.predictRelaxed(X, 2)
+    for (let i = 0; i < y.length; i++) a.ok(Math.abs(relaxed[i] - y[i]) < 1e-5)
+    const bytes = model.save()
+    a.equal(require('@wlearn/core').decodeBundle(bytes).manifest.typeId, 'wlearn.gam.regressor@2')
+    const loaded = await require('@wlearn/core').load(bytes)
+    try {
+      a.deepEqual(loaded.predict(X, 2), ordinary)
+      a.deepEqual(loaded.predictRelaxed(X, 2), relaxed)
+      a.deepEqual(loaded.save(), bytes)
+    } finally { loaded.dispose() }
+  } finally { model.dispose() }
+})
+
+await test('ordinary bundles retain their identity and reject relaxed access', async () => {
+  const a = require('node:assert/strict')
+  const model = await GAMModel.create({ family: 'gaussian', nLambda: 1 })
+  try {
+    model.fit([[0], [1], [2]], [0, 1, 2])
+    a.equal(model.hasRelaxed, false)
+    a.equal(require('@wlearn/core').decodeBundle(model.save()).manifest.typeId, 'wlearn.gam.regressor@1')
+    a.throws(() => model.predictRelaxed([[0]]), /relaxed/i)
+    a.throws(() => model.getRelaxedCoefs(), /relaxed/i)
+  } finally { model.dispose() }
+})
+
+await test('unsupported relaxed fitting preserves an existing model', async () => {
+  const a = require('node:assert/strict')
+  const X = [[0], [1], [2]], y = [0, 1, 2]
+  const model = await GAMModel.create({ nLambda: 1 })
+  try {
+    model.fit(X, y)
+    const before = model.predict(X)
+    model.setParams({ relax: 1, groups: [0] })
+    a.throws(() => model.fit(X, y), /relax.*group/)
+    a.deepEqual(model.predict(X), before)
+    for (const method of ['fitCox', 'fitMulti', 'fitMultinomial', 'fitGamlss']) {
+      a.throws(() => model[method](X, y), /relax.*not supported/)
+      a.deepEqual(model.predict(X), before)
+    }
+  } finally { model.dispose() }
+})
+
 // Summary
 // ============================================================
 console.log(`\n=== Results: ${passed} passed, ${failed} failed ===`)

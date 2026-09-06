@@ -76,8 +76,46 @@ def test_gaussian_linear_fixture(tmp_path):
         model.dispose()
 
 
+def test_relaxed_roundtrip_and_missing_state():
+    import numpy as np
+    import pytest
+    from wlearn.registry import load
+
+    X = (np.arange(80) - 39.5).reshape(-1, 1) / 10
+    y = 1.25 + 3 * X[:, 0]
+    model = GAMModel({'family': 'gaussian', 'penalty': 'lasso', 'relax': 1,
+                      'nLambda': 3, 'lambdaMinRatio': 0.3}).fit(X, y)
+    try:
+        assert model.has_relaxed
+        assert abs(model.get_coefs(2)[1] - 3) > 0.1
+        np.testing.assert_allclose(model.get_relaxed_coefs(2), [1.25, 3], atol=1e-5)
+        np.testing.assert_allclose(model.predict_relaxed(X, 2), y, atol=1e-5)
+        bundle = model.save()
+        assert decode_bundle(bundle)[0]['typeId'] == 'wlearn.gam.regressor@2'
+        loaded = load(bundle)
+        try:
+            np.testing.assert_array_equal(loaded.predict(X, 2), model.predict(X, 2))
+            np.testing.assert_array_equal(loaded.predict_relaxed(X, 2), model.predict_relaxed(X, 2))
+            assert loaded.save() == bundle
+        finally:
+            loaded.dispose()
+    finally:
+        model.dispose()
+    ordinary = GAMModel({'nLambda': 1}).fit(X, y)
+    try:
+        assert not ordinary.has_relaxed
+        assert decode_bundle(ordinary.save())[0]['typeId'] == 'wlearn.gam.regressor@1'
+        with pytest.raises(RuntimeError, match='relaxed'):
+            ordinary.predict_relaxed(X)
+        with pytest.raises(RuntimeError, match='relaxed'):
+            ordinary.get_relaxed_coefs()
+    finally:
+        ordinary.dispose()
+
+
 if __name__ == "__main__":
     import tempfile
     with tempfile.TemporaryDirectory() as td:
         test_gaussian_linear_fixture(Path(td))
+        test_relaxed_roundtrip_and_missing_state()
     print("wlearn_gam fixture tests passed")
