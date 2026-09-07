@@ -468,3 +468,17 @@ make test-py-ref   # optional sklearn/scipy/statsmodels parity tests
 ## License
 
 Apache-2.0
+
+## Classifier prediction contract
+
+For binomial and multinomial models, `predict()` returns int32 class labels.
+`predictProba()` (Python: `predict_proba()`) returns a flat row-major matrix
+with one column per entry in `classes`, including both columns for binary
+classification. Arbitrary int32 labels are encoded for fitting and retained in
+WLRN metadata. Existing artifacts without class metadata use ordinal labels.
+
+`task: 'classification'` chooses binomial or multinomial from the fitted labels
+when no family is specified. Explicit families remain authoritative. The former
+scalar response is available as `predictResponse()` / `predict_response()`;
+relaxed response accessors retain their numerical meaning. This corrects the
+unreleased estimator contract for Pipeline, AutoML scoring, and ensembles.

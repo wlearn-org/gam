@@ -1,4 +1,6 @@
 import json
+import numpy as np
+import pytest
 from pathlib import Path
 
 import wlearn_gam
@@ -119,3 +121,26 @@ if __name__ == "__main__":
         test_gaussian_linear_fixture(Path(td))
         test_relaxed_roundtrip_and_missing_state()
     print("wlearn_gam fixture tests passed")
+
+
+@pytest.mark.parametrize('labels', [[-5, 9], [-5, 3, 9]])
+def test_classifier_contract(labels):
+    from wlearn.prediction import create_prediction
+    X = np.array([[i % len(labels), i / 24] for i in range(24)])
+    y = np.array([labels[int(row[0])] for row in X])
+    model = GAMModel.create({'task': 'classification', 'nLambda': 3, 'maxIter': 50})
+    restored = None
+    try:
+        model.fit(X, y)
+        proba = model.predict_proba(X)
+        assert proba.shape == (len(X) * len(labels),)
+        np.testing.assert_array_equal(model.classes, labels)
+        assert set(model.predict(X)).issubset(labels)
+        create_prediction(truth=y, proba=proba, classes=model.classes)
+        restored = GAMModel.load(model.save())
+        np.testing.assert_array_equal(restored.classes, model.classes)
+        np.testing.assert_array_equal(restored.predict(X), model.predict(X))
+    finally:
+        model.dispose()
+        if restored is not None:
+            restored.dispose()

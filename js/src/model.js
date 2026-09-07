@@ -3,7 +3,7 @@ const {
   normalizeX, normalizeY,
   encodeBundle, decodeBundle,
   register,
-  DisposedError, NotFittedError
+  DisposedError, NotFittedError, ValidationError
 } = require('@wlearn/core')
 
 // Constants matching gam.h
@@ -54,6 +54,16 @@ const leakRegistry = typeof FinalizationRegistry !== 'undefined'
   })
   : null
 
+function classLabels(values, expected) {
+  const labels = Array.from(values)
+  if (labels.length < 2 || (expected != null && labels.length !== expected) ||
+      labels.some(label => !Number.isInteger(label) || label < -2147483648 || label > 2147483647) ||
+      new Set(labels).size !== labels.length) {
+    throw new ValidationError('GAM classes must be unique int32 labels matching the probability columns')
+  }
+  return Int32Array.from(labels)
+}
+
 const LOAD_SENTINEL = Symbol('load')
 
 class GAMModel {
@@ -66,6 +76,7 @@ class GAMModel {
   #nFits = 0
   #familyInferred = false
   #artifactMediaType = null
+  #classes = null
 
   constructor(handle, params, extra) {
     if (handle === LOAD_SENTINEL) {
@@ -74,6 +85,7 @@ class GAMModel {
       this.#nFeatures = extra.nFeatures || 0
       this.#nFits = extra.nFits || 0
       this.#artifactMediaType = extra.artifactMediaType || null
+      this.#classes = extra.classes || null
       this.#fitted = true
     } else {
       this.#handle = null
@@ -107,6 +119,14 @@ class GAMModel {
       this.#familyInferred = true
     }
 
+    const kind = resolveEnum(FAMILY, this.#params.family, 0)
+    if (kind === 7 || (kind === 1 && this.#familyInferred && new Set(y).size > 2)) {
+      const inferred = this.#familyInferred
+      const result = this.fitMultinomial(X, y, new Set(y).size)
+      this.#familyInferred = inferred
+      return result
+    }
+
     if (this.#handle) {
       wasm._wl_gam_free(this.#handle)
       this.#handle = null
@@ -116,13 +136,18 @@ class GAMModel {
 
     const { data: xData, rows, cols } = this.#normalizeX(X)
     const yNorm = normalizeY(y)
-    const yData = yNorm instanceof Float64Array ? yNorm : new Float64Array(yNorm)
+    let yData = yNorm instanceof Float64Array ? yNorm : new Float64Array(yNorm)
 
     if (yData.length !== rows) {
       throw new Error(`y length (${yData.length}) does not match X rows (${rows})`)
     }
 
     const family = resolveEnum(FAMILY, this.#params.family, 0)
+    this.#classes = family === 1 ? classLabels([...new Set(yData)].sort((a, b) => a - b), 2) : null
+    if (this.#classes) {
+      const columns = new Map(Array.from(this.#classes, (label, index) => [label, index]))
+      yData = Float64Array.from(yData, label => columns.get(label))
+    }
     const link = resolveEnum(LINK, this.#params.link, -1)
     const penalty = resolveEnum(PENALTY, this.#params.penalty, 3)
 
@@ -332,7 +357,9 @@ class GAMModel {
 
     const { data: xData, rows, cols } = this.#normalizeX(X)
     const yNorm = normalizeY(y)
-    const yData = yNorm instanceof Float64Array ? yNorm : new Float64Array(yNorm)
+    const labels = classLabels([...new Set(yNorm)].sort((a, b) => a - b), nClasses)
+    const columns = new Map(Array.from(labels, (label, index) => [label, index]))
+    const yData = Float64Array.from(yNorm, label => columns.get(label))
 
     if (yData.length !== rows) {
       throw new Error(`y length (${yData.length}) does not match X rows (${rows})`)
@@ -367,6 +394,7 @@ class GAMModel {
       throw new Error(`Multinomial training failed: ${getLastError()}`)
     }
 
+    this.#classes = labels
     this.#handle = modelPtr
     this.#fitted = true
     this.#nFeatures = cols
@@ -533,7 +561,27 @@ class GAMModel {
     return getWasm()._wl_gam_get_n_tasks(this.#handle)
   }
 
+  get classes() {
+    const family = resolveEnum(FAMILY, this.#params.family, 0)
+    if (!this.#fitted || ![1, 7].includes(family)) return null
+    return this.#classes ? new Int32Array(this.#classes)
+      : Int32Array.from({ length: family === 1 ? 2 : this.nTasks }, (_, index) => index)
+  }
+
   predict(X, fitIdx) {
+    const classes = this.classes
+    if (!classes) return this.predictResponse(X, fitIdx)
+    const proba = this.predictProba(X, fitIdx)
+    return Int32Array.from({ length: proba.length / classes.length }, (_, row) => {
+      let best = 0
+      for (let col = 1; col < classes.length; col++) {
+        if (proba[row * classes.length + col] > proba[row * classes.length + best]) best = col
+      }
+      return classes[best]
+    })
+  }
+
+  predictResponse(X, fitIdx) {
     return this.#predictResponse(X, fitIdx, false)
   }
 
@@ -575,7 +623,7 @@ class GAMModel {
     this.#ensureFitted()
     const family = resolveEnum(FAMILY, this.#params.family, 0)
     if (family !== 1 && family !== 7) {
-      throw new Error('predictProba is only available for binomial/multinomial')
+      throw new ValidationError('predictProba is only available for binomial/multinomial')
     }
 
     // For multinomial, delegate to predictMultinomial
@@ -603,7 +651,12 @@ class GAMModel {
     const result = new Float64Array(rows)
     result.set(wasm.HEAPF64.subarray(outPtr / 8, outPtr / 8 + rows))
     wasm._free(outPtr)
-    return result
+    const probabilities = new Float64Array(rows * 2)
+    for (let row = 0; row < rows; row++) {
+      probabilities[row * 2] = 1 - result[row]
+      probabilities[row * 2 + 1] = result[row]
+    }
+    return probabilities
   }
 
   predictEta(X, fitIdx) {
@@ -635,32 +688,10 @@ class GAMModel {
     const yArr = normalizeY(y)
     const family = resolveEnum(FAMILY, this.#params.family, 0)
 
-    if (family === 7) {
-      // Accuracy (multinomial) -- argmax of probabilities
-      const probs = this.predictMultinomial(X, fitIdx)
-      const nClasses = this.nTasks
-      let correct = 0
-      for (let i = 0; i < yArr.length; i++) {
-        let bestClass = 0, bestProb = probs[i * nClasses]
-        for (let k = 1; k < nClasses; k++) {
-          if (probs[i * nClasses + k] > bestProb) {
-            bestProb = probs[i * nClasses + k]
-            bestClass = k
-          }
-        }
-        if (bestClass === yArr[i]) correct++
-      }
-      return correct / yArr.length
-    }
-
     const preds = this.predict(X, fitIdx)
-
-    if (family === 1) {
-      // Accuracy (binomial)
+    if (family === 1 || family === 7) {
       let correct = 0
-      for (let i = 0; i < preds.length; i++) {
-        if ((preds[i] >= 0.5 ? 1 : 0) === yArr[i]) correct++
-      }
+      for (let i = 0; i < preds.length; i++) if (preds[i] === yArr[i]) correct++
       return correct / preds.length
     } else {
       // R-squared
@@ -752,6 +783,9 @@ class GAMModel {
       nFits: this.#nFits
     }
 
+    // Canonical ordinal classes need no extra metadata in existing artifacts.
+    const classes = this.classes
+    if (classes && classes.some((label, index) => label !== index)) metadata.classes = Array.from(classes)
     return encodeBundle(
       { typeId, params: this.getParams(), metadata },
       [{ id: 'model', data: rawBytes, mediaType: this.#artifactMediaType ||
@@ -790,9 +824,17 @@ class GAMModel {
     const nFeatures = metadata.nFeatures || wasm._wl_gam_get_n_features(modelPtr)
     const nFits = metadata.nFits || wasm._wl_gam_get_n_fits(modelPtr)
 
-    return new GAMModel(LOAD_SENTINEL, modelPtr, {
-      params, nFeatures, nFits, artifactMediaType: entry.mediaType
-    })
+    try {
+      const family = resolveEnum(FAMILY, params.family, 0)
+      const classes = metadata.classes == null ? null : classLabels(metadata.classes,
+        family === 1 ? 2 : wasm._wl_gam_get_n_tasks(modelPtr))
+      return new GAMModel(LOAD_SENTINEL, modelPtr, {
+        params, nFeatures, nFits, classes, artifactMediaType: entry.mediaType
+      })
+    } catch (error) {
+      wasm._wl_gam_free(modelPtr)
+      throw error
+    }
   }
 
   dispose() {
@@ -847,9 +889,9 @@ class GAMModel {
     }
   }
 
-  static defaultSearchSpace() {
+  static defaultSearchSpace(task) {
     return {
-      family: { type: 'categorical', values: ['gaussian', 'binomial', 'poisson', 'gamma'] },
+      ...(task ? {} : { family: { type: 'categorical', values: ['gaussian', 'binomial', 'poisson', 'gamma'] } }),
       penalty: { type: 'categorical', values: ['elasticnet', 'lasso', 'ridge', 'mcp', 'scad', 'slope'] },
       alpha: { type: 'uniform', low: 0.0, high: 1.0 },
       nLambda: { type: 'categorical', values: [50, 100] },

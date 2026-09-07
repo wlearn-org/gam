@@ -3,6 +3,7 @@ import ctypes
 import numpy as np
 from wlearn.bundle import encode_bundle, decode_bundle, write_bundle_output
 from wlearn.registry import register
+from wlearn.errors import ValidationError, NotFittedError, DisposedError
 
 from ._ffi import get_lib
 
@@ -93,11 +94,19 @@ def _declare(lib):
         _I,
     ]
     lib.wl_gam_fit_groups.restype = ctypes.c_void_p
+    lib.wl_gam_fit_multinomial.argtypes = [
+        _DP, _I, _I, _DP, _I, _I, _D, _I, _D, _D, _I, _I, _I, _I, _I,
+    ]
+    lib.wl_gam_fit_multinomial.restype = ctypes.c_void_p
+    lib.wl_gam_get_n_tasks.argtypes = [ctypes.c_void_p]
+    lib.wl_gam_get_n_tasks.restype = _I
 
     lib.wl_gam_predict.argtypes = [
         ctypes.c_void_p, _I, _DP, _I, _I, _DP,
     ]
     lib.wl_gam_predict.restype = _I
+    lib.wl_gam_predict_multinomial.argtypes = lib.wl_gam_predict.argtypes
+    lib.wl_gam_predict_multinomial.restype = _I
     lib.wl_gam_predict_relaxed.argtypes = lib.wl_gam_predict.argtypes
     lib.wl_gam_predict_relaxed.restype = _I
     lib.wl_gam_has_relaxed.argtypes = [ctypes.c_void_p]
@@ -185,6 +194,17 @@ def _last_error(lib):
     return err.decode("utf-8", "replace") if err else "unknown error"
 
 
+def _class_labels(values, expected=None):
+    labels = np.asarray(values)
+    if (labels.ndim != 1 or len(labels) < 2 or
+            (expected is not None and len(labels) != expected) or
+            labels.dtype.kind not in 'iuf' or not np.all(np.isfinite(labels)) or
+            np.any(labels != np.floor(labels)) or np.any(labels < -(1 << 31)) or
+            np.any(labels >= (1 << 31)) or len(np.unique(labels)) != len(labels)):
+        raise ValidationError('GAM classes must be unique int32 labels matching the probability columns')
+    return labels.astype(np.int32)
+
+
 class GAMModel:
     """GLM/GAM estimator backed by the wlearn C11 core."""
 
@@ -195,6 +215,8 @@ class GAMModel:
         self._disposed = False
         self._n_features = 0
         self._n_fits = 0
+        self._classes = None
+        self._family_inferred = False
 
     @classmethod
     def create(cls, params=None):
@@ -202,7 +224,7 @@ class GAMModel:
 
     def fit(self, X, y):
         if self._disposed:
-            raise RuntimeError("GAMModel has been disposed")
+            raise DisposedError("GAMModel has been disposed")
 
         lib = _lib()
         if self._params.get("relax") and self._params.get("groups") is not None:
@@ -215,12 +237,43 @@ class GAMModel:
         if y.shape[0] != nrow:
             raise ValueError(f"y length ({y.shape[0]}) does not match X rows ({nrow})")
 
+        if self._params.get('family') is None and self._params.get('task') is not None:
+            task = self._params['task']
+            if task not in ('classification', 'regression'):
+                raise ValidationError('GAM task must be classification or regression')
+            self._params['family'] = 'binomial' if task == 'classification' else 'gaussian'
+            self._family_inferred = True
         family = _resolve_enum(FAMILY, self._params.get("family"), 0)
+        self._classes = None
+        if family in (1, 7):
+            labels = _class_labels(np.unique(y))
+            if family == 1 and self._family_inferred and len(labels) > 2:
+                self._params['family'] = 'multinomial'
+                family = 7
+            if family == 1 and len(labels) != 2:
+                raise ValidationError('Binomial GAM requires exactly two classes')
+            self._classes = labels
+            y = np.ascontiguousarray(np.searchsorted(labels, y), dtype=np.float64)
         link = _resolve_enum(LINK, self._params.get("link"), -1)
         penalty = _resolve_enum(PENALTY, self._params.get("penalty"), 3)
         groups = self._params.get("groups")
 
-        if groups is not None and penalty in (6, 7):
+        if family == 7:
+            if self._params.get('relax') or groups is not None:
+                raise ValidationError('Multinomial GAM does not support relaxed or group fitting')
+            handle = lib.wl_gam_fit_multinomial(
+                X.ctypes.data_as(_DP), nrow, ncol, y.ctypes.data_as(_DP), len(self._classes),
+                penalty, float(self._params.get('alpha', 1.0)),
+                int(self._params.get('nLambda', self._params.get('n_lambda', 50))),
+                float(self._params.get('lambdaMinRatio', self._params.get('lambda_min_ratio', 0.0))),
+                float(self._params.get('tol', 1e-7)),
+                int(self._params.get('maxIter', self._params.get('max_iter', 10000))),
+                int(self._params.get('maxInner', self._params.get('max_inner', 25))),
+                int(self._params.get('standardize', 1)),
+                int(self._params.get('fitIntercept', self._params.get('fit_intercept', 1))),
+                int(self._params.get('seed', 42)),
+            )
+        elif groups is not None and penalty in (6, 7):
             groups_arr = np.ascontiguousarray(groups, dtype=np.int32)
             if groups_arr.shape[0] != ncol:
                 raise ValueError(
@@ -277,7 +330,24 @@ class GAMModel:
         self._n_fits = lib.wl_gam_get_n_fits(handle)
         return self
 
+    @property
+    def classes(self):
+        family = _resolve_enum(FAMILY, self._params.get('family'), 0)
+        if not self.is_fitted or family not in (1, 7):
+            return None
+        if self._classes is not None:
+            return self._classes.copy()
+        count = 2 if family == 1 else _lib().wl_gam_get_n_tasks(self._handle)
+        return np.arange(count, dtype=np.int32)
+
     def predict(self, X, fit_idx=None):
+        classes = self.classes
+        if classes is None:
+            return self.predict_response(X, fit_idx)
+        proba = self.predict_proba(X, fit_idx).reshape(-1, len(classes))
+        return classes[proba.argmax(axis=1)]
+
+    def predict_response(self, X, fit_idx=None):
         return self._predict_common(X, fit_idx, "wl_gam_predict", "predict")
 
     def predict_relaxed(self, X, fit_idx=None):
@@ -291,17 +361,22 @@ class GAMModel:
         return self._predict_common(X, fit_idx, "wl_gam_predict_eta", "predict_eta")
 
     def predict_proba(self, X, fit_idx=None):
+        self._ensure_fitted()
         family = _resolve_enum(FAMILY, self._params.get("family"), 0)
+        if family == 7:
+            return self._predict_common(X, fit_idx, 'wl_gam_predict_multinomial',
+                                        'predict_proba', len(self.classes))
         if family != 1:
-            raise RuntimeError("predict_proba is only available for binomial models")
-        return self._predict_common(X, fit_idx, "wl_gam_predict_proba", "predict_proba")
+            raise ValidationError('predict_proba is only available for binomial/multinomial models')
+        positive = self._predict_common(X, fit_idx, "wl_gam_predict_proba", "predict_proba")
+        return np.column_stack((1 - positive, positive)).reshape(-1)
 
     def score(self, X, y, fit_idx=None):
         y = _as_vector(y)
         family = _resolve_enum(FAMILY, self._params.get("family"), 0)
         preds = self.predict(X, fit_idx)
-        if family == 1:
-            return float(np.mean((preds >= 0.5).astype(np.int32) == y.astype(np.int32)))
+        if family in (1, 7):
+            return float(np.mean(preds == y))
         ss_res = float(np.sum((y - preds) ** 2))
         ss_tot = float(np.sum((y - y.mean()) ** 2))
         return 1.0 - ss_res / ss_tot if ss_tot > 0 else 0.0
@@ -352,14 +427,15 @@ class GAMModel:
             type_id = TYPE_ID_CLASSIFIER_V2 if family in (1, 7) else TYPE_ID_REGRESSOR_V2
         else:
             type_id = TYPE_ID_CLASSIFIER if family in (1, 7) else TYPE_ID_REGRESSOR
+        metadata = {'nFeatures': self._n_features, 'nFits': self._n_fits}
+        classes = self.classes
+        if classes is not None and not np.array_equal(classes, np.arange(len(classes))):
+            metadata['classes'] = classes.tolist()
         bundle = encode_bundle(
             {
                 "typeId": type_id,
                 "params": self.get_params(),
-                "metadata": {
-                    "nFeatures": self._n_features,
-                    "nFits": self._n_fits,
-                },
+                "metadata": metadata,
             },
             [{
                 "id": "model",
@@ -389,8 +465,16 @@ class GAMModel:
         if type_id in (TYPE_ID_CLASSIFIER, TYPE_ID_CLASSIFIER_V2):
             params.setdefault("family", "binomial")
         model = cls._load_raw(raw, params)
-        model._artifact_media_type = entry['mediaType']
-        return model
+        try:
+            labels = manifest.get('metadata', {}).get('classes')
+            if labels is not None:
+                expected = len(model.classes) if model.classes is not None else 0
+                model._classes = _class_labels(labels, expected)
+            model._artifact_media_type = entry['mediaType']
+            return model
+        except Exception:
+            model.dispose()
+            raise
 
     def _save_raw(self):
         self._ensure_fitted()
@@ -429,9 +513,13 @@ class GAMModel:
         return dict(self._params)
 
     def set_params(self, params=None, **kwargs):
-        if params:
-            self._params.update(params)
-        self._params.update(kwargs)
+        updates = {**(params or {}), **kwargs}
+        if 'family' in updates:
+            self._family_inferred = False
+        elif 'task' in updates and self._family_inferred:
+            self._params.pop('family', None)
+            self._family_inferred = False
+        self._params.update(updates)
         return self
 
     @property
@@ -472,9 +560,9 @@ class GAMModel:
         }
 
     @staticmethod
-    def default_search_space():
+    def default_search_space(task=None):
         return {
-            "family": {"type": "categorical", "values": ["gaussian", "binomial", "poisson", "gamma"]},
+            **({} if task else {"family": {"type": "categorical", "values": ["gaussian", "binomial", "poisson", "gamma"]}}),
             "penalty": {"type": "categorical", "values": ["elasticnet", "lasso", "ridge", "mcp", "scad", "slope"]},
             "alpha": {"type": "uniform", "low": 0.0, "high": 1.0},
             "nLambda": {"type": "categorical", "values": [50, 100]},
@@ -483,12 +571,12 @@ class GAMModel:
 
     defaultSearchSpace = default_search_space
 
-    def _predict_common(self, X, fit_idx, fn_name, label):
+    def _predict_common(self, X, fit_idx, fn_name, label, columns=1):
         self._ensure_fitted()
         lib = _lib()
         X = _as_matrix(X)
         nrow, ncol = X.shape
-        out = np.zeros(nrow, dtype=np.float64)
+        out = np.zeros(nrow * columns, dtype=np.float64)
         fn = getattr(lib, fn_name)
         ret = fn(
             self._handle,
@@ -510,9 +598,9 @@ class GAMModel:
 
     def _ensure_fitted(self):
         if self._disposed:
-            raise RuntimeError("GAMModel has been disposed")
+            raise DisposedError("GAMModel has been disposed")
         if not self._fitted or not self._handle:
-            raise RuntimeError("GAMModel is not fitted. Call fit() first")
+            raise NotFittedError("GAMModel is not fitted. Call fit() first")
 
     def _free_handle(self):
         if self._handle:

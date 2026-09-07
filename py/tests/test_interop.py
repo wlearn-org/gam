@@ -11,10 +11,12 @@ from wlearn.bundle import decode_bundle
 from wlearn_gam import GAMModel
 
 
-@pytest.mark.parametrize('family,relax', [('gaussian', 0), ('gaussian', 1), ('binomial', 1)])
+@pytest.mark.parametrize('family,relax', [('gaussian', 0), ('gaussian', 1), ('binomial', 1), ('multinomial', 0)])
 def test_native_wasm_roundtrip(tmp_path, family, relax):
     X = np.linspace(-2, 2, 80).reshape(-1, 1)
     y = 1.25 + 3 * X[:, 0] if family == 'gaussian' else (np.arange(80) % 3 == 0).astype(float)
+    if family == 'multinomial':
+        y = np.array([-5, 3, 9])[np.arange(80) % 3]
     params = {'family': family, 'relax': relax, 'penalty': 'lasso',
               'nLambda': 3, 'lambdaMinRatio': 0.3}
     py_path, js_path, resaved = [tmp_path / name for name in ['py.wlrn', 'js.wlrn', 'resaved.wlrn']]

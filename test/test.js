@@ -291,7 +291,7 @@ await test('Binomial predictProba', async () => {
 
   const proba = model.predictProba(X)
   assert(proba instanceof Float64Array, 'proba should be Float64Array')
-  assert(proba.length === 80, `proba length: ${proba.length}`)
+  assert(proba.length === 160, `proba length: ${proba.length}`)
 
   // Probabilities should be in [0, 1]
   for (let i = 0; i < proba.length; i++) {
