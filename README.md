@@ -95,6 +95,12 @@ make
 
 ### JavaScript
 
+These examples use your training rows `X_train`/`y_train` (also called `X`/`y`)
+and held-out rows `X_test`/`y_test`. Later blocks reuse the `GAMModel` import.
+For Cox fitting, supply one time and event indicator per row; multi-task fitting
+uses a flat `Y` matrix and its column count `nTasks`. The multinomial example
+requires at least three distinct labels and their count `nClasses`.
+
 ```js
 const { readFileSync, writeFileSync } = require('fs')
 const { GAMModel } = require('@wlearn/gam')
@@ -200,7 +206,7 @@ model.fitGamlss(X, y, 'normal')  // or 'gamma', 'beta'
 
 // Returns [mu_0, sigma_0, mu_1, sigma_1, ...] interleaved
 const preds = model.predictGamlss(X_test)
-for (let i = 0; i < n; i++) {
+for (let i = 0; i < preds.length / 2; i++) {
   console.log(`mu=${preds[i*2]}, sigma=${preds[i*2+1]}`)
 }
 ```
@@ -289,7 +295,7 @@ free(preds);
 
 #### JavaScript (`GAMModel`)
 
-```js
+```text
 // Construction
 const model = await GAMModel.create(params)
 
@@ -481,5 +487,5 @@ WLRN metadata. Existing artifacts without class metadata use ordinal labels.
 `task: 'classification'` chooses binomial or multinomial from the fitted labels
 when no family is specified. Explicit families remain authoritative. The former
 scalar response is available as `predictResponse()` / `predict_response()`;
-relaxed response accessors retain their numerical meaning. This corrects the
-unreleased estimator contract for Pipeline, AutoML scoring, and ensembles.
+relaxed response accessors retain their numerical meaning. These prediction methods share the
+estimator contract used by Pipeline, AutoML scoring, and ensembles.

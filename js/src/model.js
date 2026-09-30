@@ -282,6 +282,9 @@ class GAMModel {
     this.#fitted = true
     this.#nFeatures = cols
     this.#nFits = wasm._wl_gam_get_n_fits(modelPtr)
+    this.#params.family = 'cox'
+    this.#familyInferred = false
+    this.#classes = null
 
     this.#registerLeak()
     return this
@@ -338,6 +341,9 @@ class GAMModel {
     this.#fitted = true
     this.#nFeatures = cols
     this.#nFits = wasm._wl_gam_get_n_fits(modelPtr)
+    this.#params.family = 'gaussian'
+    this.#familyInferred = false
+    this.#classes = null
 
     this.#registerLeak()
     return this
@@ -871,7 +877,7 @@ class GAMModel {
   }
 
   get isFitted() {
-    return this.#fitted && !this.#freed
+    return this.#fitted && !!this.#handle && !this.#freed
   }
 
   get capabilities() {

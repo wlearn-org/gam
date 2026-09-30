@@ -86,7 +86,7 @@ async function main() {
 // ============================================================
 console.log('\n=== WASM Loading ===')
 
-const { loadGAM } = require('../js/src/wasm.js')
+const { loadGAM } = require('../js')
 const wasm = await loadGAM()
 
 await test('WASM module loads', async () => {
@@ -104,7 +104,7 @@ await test('get_last_error returns string', async () => {
 // ============================================================
 console.log('\n=== GAMModel ===')
 
-const { GAMModel } = require('../js/src/model.js')
+const { GAMModel } = require('../js')
 
 await test('create() returns model', async () => {
   const model = await GAMModel.create()
@@ -801,7 +801,7 @@ await test('auto-inferred family follows classification/regression task changes'
   assert(explicit.capabilities.regressor, 'explicit family must take precedence over task')
   explicit.dispose()
 
-  const { GAMModel: PublicGAMModel } = require('../js/src/index.js')
+  const { GAMModel: PublicGAMModel } = require('../js')
   const publicModel = await PublicGAMModel.create({ nLambda: 3, maxIter: 50 })
   publicModel.fit(X, classificationY)
   assert(publicModel.task === 'classification', 'public model should detect classification')
@@ -1404,7 +1404,9 @@ await test('ordinary bundles retain their identity and reject relaxed access', a
   } finally { model.dispose() }
 })
 
-await test('unsupported relaxed fitting preserves an existing model', async () => {
+await test('backend preserves an existing model on unsupported relaxed fitting', async () => {
+  // Backend setParams retains its fit; the public wrapper invalidates it.
+  const { GAMModel } = require('../js/src/model.js')
   const a = require('node:assert/strict')
   const X = [[0], [1], [2]], y = [0, 1, 2]
   const model = await GAMModel.create({ nLambda: 1 })
@@ -1414,6 +1416,39 @@ await test('unsupported relaxed fitting preserves an existing model', async () =
     model.setParams({ relax: 1, groups: [0] })
     a.throws(() => model.fit(X, y), /relax.*group/)
     a.deepEqual(model.predict(X), before)
+    for (const method of ['fitCox', 'fitMulti', 'fitMultinomial', 'fitGamlss']) {
+      a.throws(() => model[method](X, y), /relax.*not supported/)
+      a.deepEqual(model.predict(X), before)
+    }
+  } finally { model.dispose() }
+})
+
+await test('public specialized fits preserve ownership and task across refits', async () => {
+  const a = require('node:assert/strict')
+  const X = [[0], [1], [2], [3], [4], [5]], y = [0, 0, 1, 1, 2, 2]
+  const model = await GAMModel.create({ nLambda: 2, maxIter: 30 })
+  try {
+    a.equal(model.fitMultinomial(X, y, 3), model)
+    a.equal(model.task, 'classification')
+    a.equal(model.predictProba(X).length, 18)
+    a.equal(model.fitCox(X, [1, 2, 3, 4, 5, 6], [1, 1, 0, 1, 0, 1]), model)
+    a.equal(model.task, 'regression')
+    a.equal(model.classes, null)
+    a.equal(model.predict(X).length, 6)
+    a.throws(() => model.fitMulti(X, [1], 2), /length/)
+    a.equal(model.isFitted, false)
+    a.throws(() => model.predict(X), /not fitted/i)
+  } finally { model.dispose() }
+  a.throws(() => model.fitCox(X, y, y), /disposed/i)
+})
+
+await test('public specialized fit rejection preserves an unchanged relaxed fit', async () => {
+  const a = require('node:assert/strict')
+  const X = [[0], [1], [2]], y = [0, 1, 2]
+  const model = await GAMModel.create({ family: 'gaussian', relax: 1, nLambda: 2 })
+  try {
+    model.fit(X, y)
+    const before = model.predict(X)
     for (const method of ['fitCox', 'fitMulti', 'fitMultinomial', 'fitGamlss']) {
       a.throws(() => model[method](X, y), /relax.*not supported/)
       a.deepEqual(model.predict(X), before)

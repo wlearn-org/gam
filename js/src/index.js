@@ -2,7 +2,13 @@ const { loadGAM, getWasm } = require('./wasm.js')
 const { GAMModel: GAMModelImpl } = require('./model.js')
 const { createModelClass } = require('@wlearn/core')
 
-const GAMModel = createModelClass(GAMModelImpl, GAMModelImpl, { name: 'GAMModel', load: loadGAM })
+const GAMModel = createModelClass(GAMModelImpl, GAMModelImpl, {
+  name: 'GAMModel', load: loadGAM,
+  fitMethods: {
+    fitCox: 'regression', fitMulti: 'regression',
+    fitMultinomial: 'classification', fitGamlss: 'regression'
+  }
+})
 
 // Convenience: create, fit, return fitted model
 async function train(params, X, y) {

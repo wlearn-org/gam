@@ -94,6 +94,12 @@ make
 
 ### JavaScript
 
+These examples use your training rows `X_train`/`y_train` (also called `X`/`y`)
+and held-out rows `X_test`/`y_test`. Later blocks reuse the `GAMModel` import.
+For Cox fitting, supply one time and event indicator per row; multi-task fitting
+uses a flat `Y` matrix and its column count `nTasks`. The multinomial example
+requires at least three distinct labels and their count `nClasses`.
+
 ```js
 const { readFileSync, writeFileSync } = require('fs')
 const { GAMModel } = require('@wlearn/gam')
@@ -199,7 +205,7 @@ model.fitGamlss(X, y, 'normal')  // or 'gamma', 'beta'
 
 // Returns [mu_0, sigma_0, mu_1, sigma_1, ...] interleaved
 const preds = model.predictGamlss(X_test)
-for (let i = 0; i < n; i++) {
+for (let i = 0; i < preds.length / 2; i++) {
   console.log(`mu=${preds[i*2]}, sigma=${preds[i*2+1]}`)
 }
 ```
@@ -288,7 +294,7 @@ free(preds);
 
 #### JavaScript (`GAMModel`)
 
-```js
+```text
 // Construction
 const model = await GAMModel.create(params)
 
