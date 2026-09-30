@@ -82,5 +82,5 @@ WLRN metadata. Existing artifacts without class metadata use ordinal labels.
 `task: 'classification'` chooses binomial or multinomial from the fitted labels
 when no family is specified. Explicit families remain authoritative. The former
 scalar response is available as `predictResponse()` / `predict_response()`;
-relaxed response accessors retain their numerical meaning. This corrects the
-unreleased estimator contract for Pipeline, AutoML scoring, and ensembles.
+relaxed response accessors retain their numerical meaning. This is the
+estimator contract used by Pipeline, AutoML scoring, and ensembles.
