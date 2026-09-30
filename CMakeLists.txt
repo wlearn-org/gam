@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 3.16)
 project(gam C)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
+include(CTest)
 
 set(CORE_SOURCES src/gam.c src/wl_api.c)
 
@@ -19,4 +20,5 @@ if(BUILD_TESTING)
     target_link_libraries(test_gam gam)
     target_include_directories(test_gam PRIVATE src)
     target_link_libraries(test_gam m)
+    add_test(NAME gam_native COMMAND test_gam)
 endif()

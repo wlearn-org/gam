@@ -1,7 +1,7 @@
 import os
 import subprocess
 import sys
-from setuptools import setup, Extension, find_packages
+from setuptools import setup, Extension
 
 if sys.platform == 'win32':
     sys.exit('wlearn-gam requires Linux. Windows is not supported.')
@@ -55,9 +55,6 @@ sources = [
 sources.append(os.path.join('wlearn_gam', '_native.c'))
 
 setup(
-    name='wlearn-gam',
-    version='0.2.0',
-    packages=find_packages(),
     ext_modules=[
         Extension(
             'wlearn_gam._native',

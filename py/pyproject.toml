@@ -10,7 +10,7 @@ readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE", "NOTICE"]
 requires-python = ">=3.10"
-dependencies = ["numpy>=1.22", "wlearn>=0.2.0"]
+dependencies = ["numpy>=1.22", "wlearn>=0.3.0,<0.4"]
 keywords = ["glm", "gam", "regularization", "machine-learning", "wlearn"]
 
 [project.urls]
